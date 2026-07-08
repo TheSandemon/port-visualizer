@@ -1,67 +1,139 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';">
-  <title>Port Visualizer</title>
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <div class="app-container">
-    <header class="header">
-      <div class="header-left">
-        <h1>Port Visualizer</h1>
-        <span class="subtitle">Local Port Detector & Dashboard</span>
-      </div>
-      <div class="header-right">
-        <button id="scanBtn" class="btn btn-primary">
-          <span class="btn-icon">&#x21bb;</span> Scan Ports
-        </button>
-        <button id="autoRefreshBtn" class="btn btn-secondary">
-          Auto Refresh: Off
-        </button>
-      </div>
-    </header>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws:; img-src 'self' data:"
+    />
+    <title>Port Visualizer</title>
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="header">
+        <div class="header-left">
+          <h1>Port Visualizer</h1>
+          <span class="subtitle">Local port dashboard</span>
+        </div>
+        <div class="header-right">
+          <div class="segmented" role="tablist" aria-label="View mode">
+            <button id="viewCards" role="tab" title="Card view (1)">Cards</button>
+            <button id="viewTable" role="tab" title="Table view (2)">Table</button>
+            <button id="viewProcess" role="tab" title="Group by process (3)">Processes</button>
+          </div>
+          <button id="themeBtn" class="btn icon-btn" title="Toggle theme">◐</button>
+          <button id="settingsBtn" class="btn icon-btn" title="Settings" aria-label="Settings">⚙</button>
+          <button id="scanBtn" class="btn btn-primary" title="Scan now (Ctrl+R)">
+            <span class="btn-icon">↻</span> Scan
+          </button>
+        </div>
+      </header>
 
-    <div class="toolbar">
-      <div class="search-container">
-        <input type="text" id="searchInput" placeholder="Search by port, process, or address...">
-      </div>
-      <div class="filter-container">
-        <select id="protocolFilter">
-          <option value="all">All Protocols</option>
-          <option value="TCP">TCP Only</option>
-          <option value="UDP">UDP Only</option>
+      <div class="toolbar">
+        <input
+          type="search"
+          id="searchInput"
+          placeholder="Search port, process, address, service…  ( / )"
+          aria-label="Search"
+        />
+        <select id="protocolFilter" aria-label="Protocol filter">
+          <option value="all">All protocols</option>
+          <option value="TCP">TCP</option>
+          <option value="UDP">UDP</option>
         </select>
-        <select id="stateFilter">
-          <option value="all">All States</option>
+        <select id="stateFilter" aria-label="State filter">
+          <option value="all">All states</option>
           <option value="LISTENING">Listening</option>
           <option value="ESTABLISHED">Established</option>
-          <option value="TIME_WAIT">Time Wait</option>
-          <option value="CLOSE_WAIT">Close Wait</option>
+          <option value="TIME_WAIT">Time wait</option>
+          <option value="CLOSE_WAIT">Close wait</option>
         </select>
-        <select id="sortBy">
-          <option value="port">Sort by Port</option>
-          <option value="process">Sort by Process</option>
-          <option value="state">Sort by State</option>
+        <select id="sortBy" aria-label="Sort order">
+          <option value="port">Sort: port</option>
+          <option value="process">Sort: process</option>
+          <option value="state">Sort: state</option>
+          <option value="memory">Sort: memory</option>
         </select>
+        <span class="toolbar-spacer"></span>
+        <label class="auto-refresh-control">
+          <input type="checkbox" id="autoRefreshToggle" />
+          Auto
+        </label>
+        <select id="refreshInterval" aria-label="Refresh interval">
+          <option value="2000">2s</option>
+          <option value="5000">5s</option>
+          <option value="10000">10s</option>
+          <option value="30000">30s</option>
+        </select>
+        <button id="exportCsvBtn" class="btn" title="Export visible rows as CSV">CSV</button>
+        <button id="exportJsonBtn" class="btn" title="Export visible rows as JSON">JSON</button>
+        <button id="historyBtn" class="btn" title="Session history">History</button>
+      </div>
+
+      <div class="content">
+        <main id="mainView" class="main-view" aria-live="polite">
+          <div id="cardsView" class="port-grid"></div>
+          <div id="tableView" class="table-wrap hidden">
+            <table class="port-table">
+              <thead>
+                <tr>
+                  <th>Port</th><th>Proto</th><th>State</th><th>Process</th><th>PID</th>
+                  <th>Local</th><th>Remote</th><th>Memory</th><th>Service</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+          </div>
+          <div id="processView" class="process-list hidden"></div>
+          <div id="emptyState" class="empty-state hidden">
+            <h3>No ports match</h3>
+            <p>Adjust filters or press Scan (Ctrl+R)</p>
+          </div>
+        </main>
+        <aside id="historyPanel" class="history-panel hidden" aria-label="Session history">
+          <div class="history-header">
+            <h2>Session history</h2>
+            <button id="historyCloseBtn" class="btn icon-btn" aria-label="Close history">✕</button>
+          </div>
+          <ul id="historyList" class="history-list"></ul>
+        </aside>
+      </div>
+
+      <footer class="footer">
+        <span id="statTotal">0 sockets</span>
+        <span id="statListening">0 listening</span>
+        <span id="statEstablished">0 established</span>
+        <span id="statProcesses">0 processes</span>
+        <span class="footer-spacer"></span>
+        <span id="scanSource"></span>
+        <span id="lastScan">Never scanned</span>
+      </footer>
+    </div>
+
+    <div id="modalOverlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal">
+        <h2 id="modalTitle">Kill process?</h2>
+        <p id="modalBody"></p>
+        <label class="modal-check"><input type="checkbox" id="killTreeCheck" /> Also kill child processes (/T)</label>
+        <div class="modal-actions">
+          <button id="modalCancel" class="btn">Cancel</button>
+          <button id="modalConfirm" class="btn btn-danger">Kill</button>
+        </div>
       </div>
     </div>
 
-    <div id="loadingIndicator" class="loading hidden">
-      <div class="spinner"></div>
-      <p>Scanning ports...</p>
+    <div id="settingsOverlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal">
+        <h2>Settings</h2>
+        <label class="modal-check"><input type="checkbox" id="settingNotify" /> Notify when a new port starts listening</label>
+        <label class="modal-check"><input type="checkbox" id="settingTray" /> Close button minimizes to tray</label>
+        <div class="modal-actions">
+          <button id="settingsClose" class="btn btn-primary">Done</button>
+        </div>
+      </div>
     </div>
 
-    <main id="portGrid" class="port-grid"></main>
-
-    <footer class="footer">
-      <span id="portCount">0 ports detected</span>
-      <span id="lastScan">Last scan: Never</span>
-    </footer>
-  </div>
-
-  <script src="app.js"></script>
-</body>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>
