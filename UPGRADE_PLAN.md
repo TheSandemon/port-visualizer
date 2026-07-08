@@ -1,9 +1,16 @@
 # Port Visualizer — Full Upgrade Plan
 
-**State (2026-07-07):** Plan only; no code changed yet. Current app: Electron 33, plain JS, ~840 LOC.
-`src/main.js` (window + 3 IPC handlers), `src/port-scanner.js` (netstat + PowerShell join),
-`src/preload.js` (3-method bridge), `src/renderer/` (vanilla HTML/CSS/JS card grid).
-Not a git repo. No tests, no lint, no TS.
+**State (2026-07-07, end of session): ALL PHASES IMPLEMENTED.**
+Git repo initialized; baseline (v1.0 vanilla JS) on `main`, rebuild on branch `upgrade`.
+Layout: `src/main` (index/scanner/netstat-parser/diff/kill/settings), `src/preload`,
+`src/renderer` (vanilla TS, keyed reconciliation), `src/shared` (types/ipc/export/known-ports/port-id),
+`tests/` (23 Vitest tests). Electron 43, electron-vite 5, strict TS, ESLint 10, Prettier.
+Verified: tests, typecheck, lint, build all green; app launched and scanned successfully;
+NSIS installer + portable built via `npm run dist`. CI at `.github/workflows/ci.yml`.
+Remaining (deliberately deferred): code signing, electron-updater publish target (needs a
+GitHub repo), Docker container detection (was optional), merge of `upgrade` into `main`.
+
+Original pre-upgrade state, for reference: Electron 33, plain JS, ~840 LOC, no git/tests/TS.
 
 ---
 

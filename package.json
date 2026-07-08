@@ -19,7 +19,7 @@
     "appId": "com.portvisualizer.app",
     "productName": "Port Visualizer",
     "directories": {
-      "output": "dist",
+      "output": "release",
       "buildResources": "build"
     },
     "files": [
