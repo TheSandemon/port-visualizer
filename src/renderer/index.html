@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';">
+  <title>Port Visualizer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="header">
+      <div class="header-left">
+        <h1>Port Visualizer</h1>
+        <span class="subtitle">Local Port Detector & Dashboard</span>
+      </div>
+      <div class="header-right">
+        <button id="scanBtn" class="btn btn-primary">
+          <span class="btn-icon">&#x21bb;</span> Scan Ports
+        </button>
+        <button id="autoRefreshBtn" class="btn btn-secondary">
+          Auto Refresh: Off
+        </button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <div class="search-container">
+        <input type="text" id="searchInput" placeholder="Search by port, process, or address...">
+      </div>
+      <div class="filter-container">
+        <select id="protocolFilter">
+          <option value="all">All Protocols</option>
+          <option value="TCP">TCP Only</option>
+          <option value="UDP">UDP Only</option>
+        </select>
+        <select id="stateFilter">
+          <option value="all">All States</option>
+          <option value="LISTENING">Listening</option>
+          <option value="ESTABLISHED">Established</option>
+          <option value="TIME_WAIT">Time Wait</option>
+          <option value="CLOSE_WAIT">Close Wait</option>
+        </select>
+        <select id="sortBy">
+          <option value="port">Sort by Port</option>
+          <option value="process">Sort by Process</option>
+          <option value="state">Sort by State</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="loadingIndicator" class="loading hidden">
+      <div class="spinner"></div>
+      <p>Scanning ports...</p>
+    </div>
+
+    <main id="portGrid" class="port-grid"></main>
+
+    <footer class="footer">
+      <span id="portCount">0 ports detected</span>
+      <span id="lastScan">Last scan: Never</span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

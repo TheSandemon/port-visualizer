@@ -1,0 +1,34 @@
+{
+  "name": "port-visualizer",
+  "version": "1.0.0",
+  "description": "Local port detector and viewer dashboard",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64"
+  },
+  "author": "",
+  "license": "MIT",
+  "build": {
+    "appId": "com.portvisualizer.app",
+    "productName": "Port Visualizer",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "files": [
+      "src/**/*"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}
