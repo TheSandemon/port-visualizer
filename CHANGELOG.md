@@ -2,7 +2,7 @@
 
 ## 2.0.0 — 2026-07-07
 
-Complete rebuild. See `UPGRADE_PLAN.md` for the full phase breakdown.
+Complete rebuild to TypeScript and modern Electron.
 
 ### Added
 - Table view, process-grouped view, and view switching (`1`/`2`/`3`).
