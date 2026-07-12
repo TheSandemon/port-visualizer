@@ -1,5 +1,7 @@
 # Port Visualizer 🌐
 
+![Port Visualizer Dashboard](resources/dashboard_preview.png)
+
 **Port Visualizer** is a clean, modern Windows desktop application designed to help you inspect, monitor, and manage the ports active on your PC. 
 
 No more wrestling with `netstat -ano` in the Command Prompt or digging through Task Manager. Port Visualizer provides a real-time, user-friendly dashboard showing which applications are using your network, how much memory they are consuming, and lets you terminate processes or find their executable directories instantly.
