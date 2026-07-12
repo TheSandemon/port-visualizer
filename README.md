@@ -27,8 +27,8 @@ No more wrestling with `netstat -ano` in the Command Prompt or digging through T
 ### Installation
 1. Go to the **[Releases](https://github.com/TheSandemon/port-visualizer/releases)** tab on GitHub.
 2. Download either:
-   - **`Port Visualizer Setup 2.0.0.exe`**: Installs the app on your PC (supports desktop & start menu shortcuts).
-   - **`Port.Visualizer.2.0.0.exe` (Portable)**: Run the app directly without installing anything.
+   - **`Port Visualizer Setup 1.0.0.exe`**: Installs the app on your PC (supports desktop & start menu shortcuts).
+   - **`Port.Visualizer.1.0.0.exe` (Portable)**: Run the app directly without installing anything.
 3. Open the app. The initial scan will run automatically!
 
 ### User Interface Tips
