@@ -1,22 +1,23 @@
 import './styles.css';
-import type { AppSettings, PortEntry, PortsUpdate, ViewMode } from '../../shared/types';
+import type {
+  AppSettings,
+  Exposure,
+  PortEntry,
+  PortEvent,
+  PortsUpdate,
+  ViewMode,
+} from '../../shared/types';
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-
-interface HistoryEvent {
-  time: number;
-  kind: 'opened' | 'closed';
-  entry: PortEntry;
-}
 
 let allPorts: PortEntry[] = [];
 let visiblePorts: PortEntry[] = [];
 let settings: AppSettings | null = null;
 let lastDiffAdded = new Set<string>();
 let lastDiffChanged = new Set<string>();
-const history: HistoryEvent[] = [];
+let history: PortEvent[] = [];
 const HISTORY_LIMIT = 500;
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,7 @@ const settingsBtn = $<HTMLButtonElement>('settingsBtn');
 const searchInput = $<HTMLInputElement>('searchInput');
 const protocolFilter = $<HTMLSelectElement>('protocolFilter');
 const stateFilter = $<HTMLSelectElement>('stateFilter');
+const exposureFilter = $<HTMLSelectElement>('exposureFilter');
 const sortBy = $<HTMLSelectElement>('sortBy');
 const autoRefreshToggle = $<HTMLInputElement>('autoRefreshToggle');
 const refreshInterval = $<HTMLSelectElement>('refreshInterval');
@@ -56,7 +58,7 @@ const historyList = $('historyList');
 // ---------------------------------------------------------------------------
 
 function formatBytes(bytes: number): string {
-  if (!bytes) return '–';
+  if (!bytes) return 'Unavailable';
   const units = ['B', 'KB', 'MB', 'GB'];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`;
@@ -64,10 +66,49 @@ function formatBytes(bytes: number): string {
 
 function stateClass(state: string): string {
   return (
-    { LISTENING: 'listening', ESTABLISHED: 'established', TIME_WAIT: 'time-wait', CLOSE_WAIT: 'close-wait' }[
-      state
-    ] ?? 'other'
+    {
+      LISTENING: 'listening',
+      ESTABLISHED: 'established',
+      TIME_WAIT: 'time-wait',
+      CLOSE_WAIT: 'close-wait',
+    }[state] ?? 'other'
   );
+}
+
+function exposureLabel(exposure: Exposure): string {
+  return exposure === 'all-interfaces'
+    ? 'All interfaces'
+    : exposure === 'lan'
+      ? 'LAN address'
+      : 'Loopback';
+}
+
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1000) return '<1s';
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function formatEndpoint(address: string, port: number | null): string {
+  const host = address.includes(':') && !address.startsWith('[') ? `[${address}]` : address;
+  return port === null ? host : `${host}:${port}`;
+}
+
+function annotationText(port: PortEntry): string {
+  return port.annotations
+    .flatMap((annotation) => Object.values(annotation.values).map(String))
+    .join(' ');
+}
+
+function watchedPortKey(port: PortEntry): string {
+  return `${port.protocol}:${port.localPort}`;
+}
+
+function isWatched(port: PortEntry): boolean {
+  return settings?.watchedPortKeys.includes(watchedPortKey(port)) ?? false;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -94,7 +135,10 @@ function showToast(message: string, type: 'info' | 'success' | 'error' = 'info')
 
 async function copy(text: string, label: string): Promise<void> {
   const result = await window.electronAPI.copyText(text);
-  showToast(result.success ? `${label} copied` : 'Copy failed', result.success ? 'success' : 'error');
+  showToast(
+    result.success ? `${label} copied` : 'Copy failed',
+    result.success ? 'success' : 'error',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -105,14 +149,16 @@ function computeVisible(): void {
   const term = searchInput.value.trim().toLowerCase();
   const proto = protocolFilter.value;
   const state = stateFilter.value;
+  const exposure = exposureFilter.value;
 
   visiblePorts = allPorts.filter((p) => {
     if (proto !== 'all' && p.protocol !== proto) return false;
     if (state !== 'all' && p.state !== state) return false;
+    if (exposure !== 'all' && p.exposure !== exposure) return false;
     if (term) {
       const haystack =
         `${p.localPort} ${p.processName} ${p.localAddress} ${p.remoteAddress ?? ''} ` +
-        `${p.serviceLabel ?? ''} ${p.pid}`.toLowerCase();
+        `${p.serviceLabel ?? ''} ${p.pid} ${p.exposure} ${annotationText(p)}`.toLowerCase();
       if (!haystack.includes(term)) return false;
     }
     return true;
@@ -139,7 +185,7 @@ function computeVisible(): void {
 
 /** Signature of the mutable parts of an entry; unchanged rows are not rebuilt. */
 function entrySignature(p: PortEntry): string {
-  return `${p.state}|${p.memory}|${p.processName}|${p.remoteAddress}:${p.remotePort}`;
+  return `${p.state}|${p.memory}|${p.processName}|${p.remoteAddress}:${p.remotePort}|${p.exposure}|${annotationText(p)}|${p.telemetry?.localConnectionCount ?? 0}|${isWatched(p)}`;
 }
 
 /**
@@ -182,13 +228,24 @@ function reconcile(
 function buildActions(p: PortEntry): HTMLElement {
   const actions = el('div', 'entry-actions');
 
-  const copyBtn = el('button', 'action-btn', 'Copy');
-  copyBtn.title = 'Copy port number';
-  copyBtn.addEventListener('click', () => void copy(String(p.localPort), `Port ${p.localPort}`));
+  const address = formatEndpoint(p.localAddress, p.localPort);
+  const copyBtn = el('button', 'action-btn', 'Address');
+  copyBtn.title = 'Copy local address';
+  copyBtn.addEventListener('click', () => void copy(address, address));
   actions.appendChild(copyBtn);
 
+  if (p.protocol === 'TCP' && p.state === 'LISTENING') {
+    const urlBtn = el('button', 'action-btn', 'Open URL');
+    urlBtn.title = 'Open this local listener in the default browser';
+    urlBtn.addEventListener('click', async () => {
+      const result = await window.electronAPI.openLocalEndpoint(p.id);
+      if (!result.success) showToast(`Could not open endpoint: ${result.error}`, 'error');
+    });
+    actions.appendChild(urlBtn);
+  }
+
   if (p.processPath) {
-    const openBtn = el('button', 'action-btn', 'Open');
+    const openBtn = el('button', 'action-btn', 'Folder');
     openBtn.title = 'Open file location';
     openBtn.addEventListener('click', async () => {
       const result = await window.electronAPI.openAppLocation(p.processPath!);
@@ -197,10 +254,27 @@ function buildActions(p: PortEntry): HTMLElement {
     actions.appendChild(openBtn);
   }
 
-  const killBtn = el('button', 'action-btn danger', 'Kill');
-  killBtn.title = 'Kill this process';
-  killBtn.addEventListener('click', () => openKillModal(p));
-  actions.appendChild(killBtn);
+  const watching = isWatched(p);
+  const watchBtn = el('button', `action-btn${watching ? ' watched' : ''}`, watching ? 'Watching' : 'Watch');
+  watchBtn.title = watching
+    ? 'Stop watching this port'
+    : 'Notify on lifecycle, owner, and exposure changes';
+  watchBtn.addEventListener('click', async () => {
+    const watched = new Set(settings?.watchedPortKeys ?? []);
+    const key = watchedPortKey(p);
+    if (watched.has(key)) watched.delete(key);
+    else watched.add(key);
+    await patchSettings({ watchedPortKeys: [...watched] });
+    render();
+  });
+  actions.appendChild(watchBtn);
+
+  if (p.pid > 4) {
+    const killBtn = el('button', 'action-btn danger', 'Kill');
+    killBtn.title = 'Kill this process';
+    killBtn.addEventListener('click', () => openKillModal(p));
+    actions.appendChild(killBtn);
+  }
 
   return actions;
 }
@@ -216,6 +290,13 @@ function buildCard(p: PortEntry): HTMLElement {
   portSpan.addEventListener('click', () => void copy(String(p.localPort), `Port ${p.localPort}`));
   header.appendChild(portSpan);
   if (p.serviceLabel) header.appendChild(el('span', 'service-badge', p.serviceLabel));
+  if (isWatched(p)) header.appendChild(el('span', 'watch-badge', 'Watched'));
+  if (p.telemetry?.hasCollision) {
+    header.appendChild(el('span', 'collision-badge', `${p.telemetry.ownerCount} owners`));
+  }
+  header.appendChild(
+    el('span', `exposure-badge exposure-${p.exposure}`, exposureLabel(p.exposure)),
+  );
   header.appendChild(el('span', `protocol-badge ${p.protocol.toLowerCase()}`, p.protocol));
   card.appendChild(header);
 
@@ -232,9 +313,27 @@ function buildCard(p: PortEntry): HTMLElement {
   details.appendChild(stateRow);
   row('Process', p.processName, 'strong');
   row('PID', String(p.pid));
-  row('Local', `${p.localAddress}:${p.localPort}`);
-  if (p.remoteAddress) row('Remote', `${p.remoteAddress}:${p.remotePort}`);
+  row('Local', formatEndpoint(p.localAddress, p.localPort));
+  if (p.remoteAddress) row('Remote', formatEndpoint(p.remoteAddress, p.remotePort));
   row('Memory', formatBytes(p.memory));
+  if (p.telemetry) {
+    row('Observed', formatDuration(p.telemetry.lastSeenAt - p.telemetry.firstSeenAt));
+    if (p.telemetry.localConnectionCount > 0) {
+      row(
+        'Traffic',
+        `${p.telemetry.localConnectionCount} connection${p.telemetry.localConnectionCount === 1 ? '' : 's'} · ${p.telemetry.remotePeerCount} peer${p.telemetry.remotePeerCount === 1 ? '' : 's'}`,
+      );
+    }
+    if (p.telemetry.connectionRatePerMinute > 0) {
+      row('Rate', `+${p.telemetry.connectionRatePerMinute.toFixed(1)} connections/min`);
+    }
+    if (p.telemetry.endpointOpenCount > 1) {
+      row('Restarts', String(p.telemetry.endpointOpenCount - 1));
+    }
+    if (p.telemetry.stateChangeCount > 0) {
+      row('State changes', String(p.telemetry.stateChangeCount));
+    }
+  }
   if (p.processPath) {
     const r = el('div', 'detail-row');
     r.appendChild(el('span', 'detail-label', 'Path'));
@@ -244,6 +343,17 @@ function buildCard(p: PortEntry): HTMLElement {
     details.appendChild(r);
   }
   card.appendChild(details);
+  if (p.annotations.length > 0) {
+    const annotations = el('div', 'annotation-list');
+    for (const annotation of p.annotations) {
+      for (const [key, value] of Object.entries(annotation.values)) {
+        const badge = el('span', 'annotation-badge', `${key.split('.').at(-1)}: ${String(value)}`);
+        badge.title = `${annotation.source}${annotation.confidence === undefined ? '' : ` · ${Math.round(annotation.confidence * 100)}% confidence`}`;
+        annotations.appendChild(badge);
+      }
+    }
+    card.appendChild(annotations);
+  }
   card.appendChild(buildActions(p));
   return card;
 }
@@ -268,7 +378,8 @@ function buildRow(p: PortEntry): HTMLElement {
   td(p.processName);
   td(String(p.pid));
   td(p.localAddress);
-  td(p.remoteAddress ? `${p.remoteAddress}:${p.remotePort}` : '–');
+  td(p.remoteAddress ? formatEndpoint(p.remoteAddress, p.remotePort) : '–');
+  td(exposureLabel(p.exposure), `exposure-text exposure-${p.exposure}`);
   td(formatBytes(p.memory));
   td(p.serviceLabel ?? '–');
   const actionCell = el('td', 'row-actions');
@@ -302,7 +413,13 @@ function renderProcessView(): void {
 
     const head = el('div', 'process-head');
     head.appendChild(el('span', 'process-name', g.name));
-    head.appendChild(el('span', 'process-meta', `PID ${g.pid} · ${formatBytes(g.memory)} · ${g.entries.length} socket${g.entries.length === 1 ? '' : 's'}`));
+    head.appendChild(
+      el(
+        'span',
+        'process-meta',
+        `PID ${g.pid} · ${formatBytes(g.memory)} · ${g.entries.length} socket${g.entries.length === 1 ? '' : 's'}`,
+      ),
+    );
     const sample = g.entries[0];
     head.appendChild(buildActions(sample));
     groupEl.appendChild(head);
@@ -311,10 +428,10 @@ function renderProcessView(): void {
     for (const p of g.entries) {
       const chip = el(
         'span',
-        `port-chip ${stateClass(p.state)}${lastDiffAdded.has(p.id) ? ' flash-new' : ''}`,
+        `port-chip ${stateClass(p.state)} exposure-${p.exposure}${lastDiffAdded.has(p.id) ? ' flash-new' : ''}`,
         `${p.protocol} ${p.localPort}${p.serviceLabel ? ` (${p.serviceLabel})` : ''}`,
       );
-      chip.title = `${p.localAddress}:${p.localPort} — ${p.state}${p.remoteAddress ? ` ⇄ ${p.remoteAddress}:${p.remotePort}` : ''}`;
+      chip.title = `${formatEndpoint(p.localAddress, p.localPort)} — ${p.state}${p.remoteAddress ? ` ⇄ ${formatEndpoint(p.remoteAddress, p.remotePort)}` : ''}`;
       chip.addEventListener('click', () => void copy(String(p.localPort), `Port ${p.localPort}`));
       chips.appendChild(chip);
     }
@@ -342,13 +459,45 @@ function render(): void {
   else renderProcessView();
 
   updateFooter();
+  updateTelemetryHeader();
 }
 
 function updateFooter(): void {
   $('statTotal').textContent = `${visiblePorts.length} sockets`;
-  $('statListening').textContent = `${visiblePorts.filter((p) => p.state === 'LISTENING').length} listening`;
-  $('statEstablished').textContent = `${visiblePorts.filter((p) => p.state === 'ESTABLISHED').length} established`;
+  $('statListening').textContent =
+    `${visiblePorts.filter((p) => p.state === 'LISTENING').length} listening`;
+  $('statEstablished').textContent =
+    `${visiblePorts.filter((p) => p.state === 'ESTABLISHED').length} established`;
   $('statProcesses').textContent = `${new Set(visiblePorts.map((p) => p.pid)).size} processes`;
+}
+
+function updateTelemetryHeader(): void {
+  const listening = allPorts.filter((p) => p.state === 'LISTENING').length;
+  const exposed = allPorts.filter((p) => p.exposure === 'all-interfaces').length;
+  const connections = allPorts.filter((p) => p.state === 'ESTABLISHED').length;
+  $('metricListening').textContent = String(listening);
+  $('metricConnections').textContent = String(connections);
+  $('metricExposed').textContent = String(exposed);
+  $('metricChanges').textContent = String(
+    history.filter((event) => Date.now() - event.timestamp < 300_000).length,
+  );
+  renderSignalRail();
+}
+
+function renderSignalRail(): void {
+  const rail = $('signalRail');
+  rail.replaceChildren();
+  const recent = history.slice(0, 42).reverse();
+  if (recent.length === 0) {
+    rail.appendChild(el('span', 'signal-empty', 'Waiting for the first lifecycle event'));
+    return;
+  }
+  for (const event of recent) {
+    const mark = el('span', `signal-mark ${event.type.replace('port.', '')}`);
+    mark.style.height = `${event.type === 'port.changed' ? 48 : event.type === 'port.closed' ? 66 : 84}%`;
+    mark.title = `${new Date(event.timestamp).toLocaleTimeString()} · ${event.type.replace('port.', '')} · ${event.port.protocol} ${event.port.localPort} · ${event.port.processName}`;
+    rail.appendChild(mark);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,13 +505,9 @@ function updateFooter(): void {
 // ---------------------------------------------------------------------------
 
 function recordHistory(update: PortsUpdate): void {
-  const byId = new Map(update.ports.map((p) => [p.id, p]));
-  for (const id of update.diff.addedIds) {
-    const entry = byId.get(id);
-    if (entry) history.unshift({ time: update.timestamp, kind: 'opened', entry });
-  }
-  for (const entry of update.diff.removed) {
-    history.unshift({ time: update.timestamp, kind: 'closed', entry });
+  const knownSequences = new Set(history.map((event) => event.sequence));
+  for (const event of [...update.events].reverse()) {
+    if (!knownSequences.has(event.sequence)) history.unshift(event);
   }
   if (history.length > HISTORY_LIMIT) history.length = HISTORY_LIMIT;
   if (!historyPanel.classList.contains('hidden')) renderHistory();
@@ -371,19 +516,32 @@ function recordHistory(update: PortsUpdate): void {
 function renderHistory(): void {
   historyList.replaceChildren();
   if (history.length === 0) {
-    historyList.appendChild(el('li', 'history-empty', 'No port changes observed yet this session.'));
+    historyList.appendChild(
+      el('li', 'history-empty', 'No port changes observed yet this session.'),
+    );
     return;
   }
   for (const event of history) {
-    const li = el('li', `history-item ${event.kind}`);
-    const time = new Date(event.time).toLocaleTimeString();
+    const kind = event.type.replace('port.', '');
+    const li = el('li', `history-item ${kind}`);
+    const time = new Date(event.timestamp).toLocaleTimeString();
     li.appendChild(el('span', 'history-time', time));
-    li.appendChild(el('span', `history-kind ${event.kind}`, event.kind === 'opened' ? '▲' : '▼'));
+    const symbol =
+      kind === 'opened'
+        ? '＋'
+        : kind === 'closed'
+          ? '−'
+          : kind === 'owner-changed'
+            ? '↻'
+            : kind === 'exposure-changed'
+              ? '◉'
+              : '•';
+    li.appendChild(el('span', `history-kind ${kind}`, symbol));
     li.appendChild(
       el(
         'span',
         'history-text',
-        `${event.entry.protocol} ${event.entry.localPort} — ${event.entry.processName} (${event.entry.state})`,
+        `${event.port.protocol} ${event.port.localPort} — ${event.port.processName} (${event.port.state})`,
       ),
     );
     historyList.appendChild(li);
@@ -475,6 +633,8 @@ function applyUpdate(update: PortsUpdate): void {
   render();
   $('lastScan').textContent = `Last scan: ${new Date(update.timestamp).toLocaleTimeString()}`;
   $('scanSource').textContent = update.source === 'netstat' ? 'source: netstat (fallback)' : '';
+  $('packStatus').textContent =
+    `${update.knowledgePacks.length} knowledge pack${update.knowledgePacks.length === 1 ? '' : 's'}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +653,7 @@ function syncSettingsUi(): void {
   document.documentElement.dataset.theme = settings.theme;
   $<HTMLInputElement>('settingNotify').checked = settings.notifyNewListeners;
   $<HTMLInputElement>('settingTray').checked = settings.minimizeToTray;
+  $<HTMLInputElement>('settingKnowledge').checked = settings.enableKnowledgePacks;
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +664,7 @@ scanBtn.addEventListener('click', () => void scan());
 searchInput.addEventListener('input', render);
 protocolFilter.addEventListener('change', render);
 stateFilter.addEventListener('change', render);
+exposureFilter.addEventListener('change', render);
 sortBy.addEventListener('change', render);
 
 for (const [name, btn] of Object.entries(viewButtons) as [ViewMode, HTMLButtonElement][]) {
@@ -512,16 +674,16 @@ for (const [name, btn] of Object.entries(viewButtons) as [ViewMode, HTMLButtonEl
 themeBtn.addEventListener('click', () => {
   const current = settings?.theme ?? 'system';
   const next = current === 'system' ? 'dark' : current === 'dark' ? 'light' : 'system';
-  void patchSettings({ theme: next }).then(() =>
-    showToast(`Theme: ${next}`, 'info'),
-  );
+  void patchSettings({ theme: next }).then(() => showToast(`Theme: ${next}`, 'info'));
 });
 
-autoRefreshToggle.addEventListener('change', () =>
-  void patchSettings({ autoRefresh: autoRefreshToggle.checked }),
+autoRefreshToggle.addEventListener(
+  'change',
+  () => void patchSettings({ autoRefresh: autoRefreshToggle.checked }),
 );
-refreshInterval.addEventListener('change', () =>
-  void patchSettings({ refreshIntervalMs: Number(refreshInterval.value) }),
+refreshInterval.addEventListener(
+  'change',
+  () => void patchSettings({ refreshIntervalMs: Number(refreshInterval.value) }),
 );
 
 $('exportCsvBtn').addEventListener('click', () => void exportVisible('csv'));
@@ -532,7 +694,10 @@ async function exportVisible(format: 'csv' | 'json'): Promise<void> {
     showToast('Nothing to export', 'error');
     return;
   }
-  const result = await window.electronAPI.exportData({ format, ids: visiblePorts.map((p) => p.id) });
+  const result = await window.electronAPI.exportData({
+    format,
+    ids: visiblePorts.map((p) => p.id),
+  });
   if (result.success) showToast(`Exported ${visiblePorts.length} rows`, 'success');
   else if (result.error !== 'Cancelled') showToast(`Export failed: ${result.error}`, 'error');
 }
@@ -555,11 +720,17 @@ $('settingsClose').addEventListener('click', () => settingsOverlay.classList.add
 settingsOverlay.addEventListener('click', (e) => {
   if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
 });
-$<HTMLInputElement>('settingNotify').addEventListener('change', (e) =>
-  void patchSettings({ notifyNewListeners: (e.target as HTMLInputElement).checked }),
+$<HTMLInputElement>('settingNotify').addEventListener(
+  'change',
+  (e) => void patchSettings({ notifyNewListeners: (e.target as HTMLInputElement).checked }),
 );
-$<HTMLInputElement>('settingTray').addEventListener('change', (e) =>
-  void patchSettings({ minimizeToTray: (e.target as HTMLInputElement).checked }),
+$<HTMLInputElement>('settingTray').addEventListener(
+  'change',
+  (e) => void patchSettings({ minimizeToTray: (e.target as HTMLInputElement).checked }),
+);
+$<HTMLInputElement>('settingKnowledge').addEventListener(
+  'change',
+  (e) => void patchSettings({ enableKnowledgePacks: (e.target as HTMLInputElement).checked }),
 );
 
 document.addEventListener('keydown', (e) => {
@@ -596,6 +767,7 @@ window.addEventListener('beforeunload', unsubscribe);
 
 void (async () => {
   settings = await window.electronAPI.getSettings();
+  history = (await window.electronAPI.getRecentEvents(HISTORY_LIMIT)).reverse();
   syncSettingsUi();
   render();
   await scan();

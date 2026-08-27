@@ -5,6 +5,7 @@ import type {
   ExportRequest,
   KillResult,
   OkResult,
+  PortEvent,
   PortsUpdate,
 } from '../shared/types';
 
@@ -13,10 +14,12 @@ export interface ElectronApi {
   killProcess(pid: number, tree: boolean): Promise<KillResult>;
   killProcessElevated(pid: number, tree: boolean): Promise<KillResult>;
   openAppLocation(path: string): Promise<OkResult>;
+  openLocalEndpoint(id: string): Promise<OkResult>;
   copyText(text: string): Promise<OkResult>;
   exportData(request: ExportRequest): Promise<OkResult>;
   getSettings(): Promise<AppSettings>;
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
+  getRecentEvents(limit?: number): Promise<PortEvent[]>;
   onPortsUpdated(callback: (update: PortsUpdate) => void): () => void;
   onScanError(callback: (message: string) => void): () => void;
 }
@@ -26,10 +29,12 @@ const api: ElectronApi = {
   killProcess: (pid, tree) => ipcRenderer.invoke(IPC.killProcess, pid, tree),
   killProcessElevated: (pid, tree) => ipcRenderer.invoke(IPC.killProcessElevated, pid, tree),
   openAppLocation: (path) => ipcRenderer.invoke(IPC.openAppLocation, path),
+  openLocalEndpoint: (id) => ipcRenderer.invoke(IPC.openLocalEndpoint, id),
   copyText: (text) => ipcRenderer.invoke(IPC.copyText, text),
   exportData: (request) => ipcRenderer.invoke(IPC.exportData, request),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   setSettings: (patch) => ipcRenderer.invoke(IPC.setSettings, patch),
+  getRecentEvents: (limit = 500) => ipcRenderer.invoke(IPC.getRecentEvents, limit),
   onPortsUpdated: (callback) => {
     const listener = (_event: unknown, update: PortsUpdate) => callback(update);
     ipcRenderer.on(IPC.portsUpdated, listener);

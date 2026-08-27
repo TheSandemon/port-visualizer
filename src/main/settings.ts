@@ -28,6 +28,16 @@ function sanitize(raw: unknown): AppSettings {
     out.refreshIntervalMs = r.refreshIntervalMs;
   if (typeof r.notifyNewListeners === 'boolean') out.notifyNewListeners = r.notifyNewListeners;
   if (typeof r.minimizeToTray === 'boolean') out.minimizeToTray = r.minimizeToTray;
+  if (typeof r.enableKnowledgePacks === 'boolean')
+    out.enableKnowledgePacks = r.enableKnowledgePacks;
+  if (Array.isArray(r.watchedPortKeys)) {
+    out.watchedPortKeys = r.watchedPortKeys
+      .filter(
+        (key): key is string =>
+          typeof key === 'string' && /^(TCP|UDP):(?:[1-9]\d{0,4})$/.test(key),
+      )
+      .slice(0, 500);
+  }
   return out;
 }
 

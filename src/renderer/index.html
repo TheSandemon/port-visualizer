@@ -12,9 +12,12 @@
   <body>
     <div class="app" id="app">
       <header class="header">
-        <div class="header-left">
-          <h1>Port Visualizer</h1>
-          <span class="subtitle">Local port dashboard</span>
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <div>
+            <h1>Port Visualizer</h1>
+            <span class="subtitle">Live network instrument</span>
+          </div>
         </div>
         <div class="header-right">
           <div class="segmented" role="tablist" aria-label="View mode">
@@ -22,13 +25,37 @@
             <button id="viewTable" role="tab" title="Table view (2)">Table</button>
             <button id="viewProcess" role="tab" title="Group by process (3)">Processes</button>
           </div>
-          <button id="themeBtn" class="btn icon-btn" title="Toggle theme">◐</button>
-          <button id="settingsBtn" class="btn icon-btn" title="Settings" aria-label="Settings">⚙</button>
+          <button id="themeBtn" class="btn icon-btn" title="Toggle theme" aria-label="Toggle theme">
+            ◐
+          </button>
+          <button id="settingsBtn" class="btn icon-btn" title="Settings" aria-label="Settings">
+            ⚙
+          </button>
           <button id="scanBtn" class="btn btn-primary" title="Scan now (Ctrl+R)">
-            <span class="btn-icon">↻</span> Scan
+            <span class="btn-icon">↻</span> Scan now
           </button>
         </div>
       </header>
+
+      <section class="telemetry-deck" aria-label="Live port telemetry">
+        <div class="metric-grid">
+          <div class="metric"><span id="metricListening">0</span><small>Listening</small></div>
+          <div class="metric"><span id="metricConnections">0</span><small>Connected</small></div>
+          <div class="metric metric-alert">
+            <span id="metricExposed">0</span><small>All interfaces</small>
+          </div>
+          <div class="metric"><span id="metricChanges">0</span><small>Changes · 5m</small></div>
+        </div>
+        <div class="signal-panel">
+          <div class="signal-head">
+            <span>Lifecycle signal</span>
+            <span class="signal-legend"
+              ><i class="opened"></i> opened <i class="closed"></i> closed</span
+            >
+          </div>
+          <div id="signalRail" class="signal-rail" aria-label="Recent port lifecycle events"></div>
+        </div>
+      </section>
 
       <div class="toolbar">
         <input
@@ -49,11 +76,17 @@
           <option value="TIME_WAIT">Time wait</option>
           <option value="CLOSE_WAIT">Close wait</option>
         </select>
+        <select id="exposureFilter" aria-label="Exposure filter">
+          <option value="all">All exposure</option>
+          <option value="loopback">Loopback</option>
+          <option value="lan">LAN address</option>
+          <option value="all-interfaces">All interfaces</option>
+        </select>
         <select id="sortBy" aria-label="Sort order">
+          <option value="memory" selected>Sort: memory</option>
           <option value="port">Sort: port</option>
           <option value="process">Sort: process</option>
           <option value="state">Sort: state</option>
-          <option value="memory">Sort: memory</option>
         </select>
         <span class="toolbar-spacer"></span>
         <label class="auto-refresh-control">
@@ -78,8 +111,17 @@
             <table class="port-table">
               <thead>
                 <tr>
-                  <th>Port</th><th>Proto</th><th>State</th><th>Process</th><th>PID</th>
-                  <th>Local</th><th>Remote</th><th>Memory</th><th>Service</th><th></th>
+                  <th>Port</th>
+                  <th>Proto</th>
+                  <th>State</th>
+                  <th>Process</th>
+                  <th>PID</th>
+                  <th>Local</th>
+                  <th>Remote</th>
+                  <th>Exposure</th>
+                  <th>Memory</th>
+                  <th>Service</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody id="tableBody"></tbody>
@@ -87,8 +129,9 @@
           </div>
           <div id="processView" class="process-list hidden"></div>
           <div id="emptyState" class="empty-state hidden">
-            <h3>No ports match</h3>
-            <p>Adjust filters or press Scan (Ctrl+R)</p>
+            <span class="empty-glyph">∿</span>
+            <h3>No signal here</h3>
+            <p>Adjust the filters or scan again.</p>
           </div>
         </main>
         <aside id="historyPanel" class="history-panel hidden" aria-label="Session history">
@@ -107,6 +150,7 @@
         <span id="statProcesses">0 processes</span>
         <span class="footer-spacer"></span>
         <span id="scanSource"></span>
+        <span id="packStatus">0 knowledge packs</span>
         <span id="lastScan">Never scanned</span>
       </footer>
     </div>
@@ -115,7 +159,9 @@
       <div class="modal">
         <h2 id="modalTitle">Kill process?</h2>
         <p id="modalBody"></p>
-        <label class="modal-check"><input type="checkbox" id="killTreeCheck" /> Also kill child processes (/T)</label>
+        <label class="modal-check"
+          ><input type="checkbox" id="killTreeCheck" /> Also kill child processes (/T)</label
+        >
         <div class="modal-actions">
           <button id="modalCancel" class="btn">Cancel</button>
           <button id="modalConfirm" class="btn btn-danger">Kill</button>
@@ -126,8 +172,19 @@
     <div id="settingsOverlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
       <div class="modal">
         <h2>Settings</h2>
-        <label class="modal-check"><input type="checkbox" id="settingNotify" /> Notify when a new port starts listening</label>
-        <label class="modal-check"><input type="checkbox" id="settingTray" /> Close button minimizes to tray</label>
+        <label class="modal-check"
+          ><input type="checkbox" id="settingNotify" /> Notify when a new port starts
+          listening</label
+        >
+        <label class="modal-check"
+          ><input type="checkbox" id="settingTray" /> Close button minimizes to tray</label
+        >
+        <label class="modal-check"
+          ><input type="checkbox" id="settingKnowledge" /> Apply reloadable knowledge packs</label
+        >
+        <p class="setting-note">
+          Packs annotate observations without changing verified operating-system facts.
+        </p>
         <div class="modal-actions">
           <button id="settingsClose" class="btn btn-primary">Done</button>
         </div>

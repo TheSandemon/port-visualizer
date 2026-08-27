@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePowershellScan } from '../src/main/scanner';
+import { parsePowershellScan, parseTasklist } from '../src/main/scanner';
 
 const PS_JSON = JSON.stringify({
   tcp: [
@@ -74,5 +74,35 @@ describe('parsePowershellScan', () => {
     expect(result).toHaveLength(1);
     expect(result[0].localPort).toBe(8080);
     expect(result[0].serviceLabel).toBe('http-alt');
+  });
+
+  it('uses CIM as a complete process source when Get-Process data is unavailable', () => {
+    const cimOnly = JSON.stringify({
+      tcp: { LocalAddress: '127.0.0.1', LocalPort: 9000, State: 'Listen', OwningProcess: 77 },
+      cim: {
+        ProcessId: 77,
+        ParentProcessId: 7,
+        Name: 'worker.exe',
+        ExecutablePath: 'C:\\apps\\worker.exe',
+        WorkingSetSize: '65536',
+        CommandLine: 'worker.exe --serve',
+      },
+    });
+    const result = parsePowershellScan(cimOnly);
+    expect(result[0].processName).toBe('worker');
+    expect(result[0].processPath).toBe('C:\\apps\\worker.exe');
+    expect(result[0].memory).toBe(65536);
+    expect(result[0].parentPid).toBe(7);
+  });
+});
+
+describe('parseTasklist', () => {
+  it('provides process names and working-set memory for netstat fallback', () => {
+    const rows = parseTasklist(
+      '"node.exe","9241","Console","1","123,456 K"\r\n"System Idle Process","0","Services","0","8 K"',
+    );
+    expect(rows.get(9241)?.name).toBe('node');
+    expect(rows.get(9241)?.memory).toBe(123456 * 1024);
+    expect(rows.get(0)?.memory).toBe(8192);
   });
 });

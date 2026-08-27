@@ -20,6 +20,9 @@ import { diffScans } from './diff';
 import { killProcess, killProcessElevated } from './kill';
 import { scanPorts } from './scanner';
 import { getSettings, loadSettings, updateSettings } from './settings';
+import { EventStore } from './event-store';
+import { KnowledgePackRegistry } from './knowledge-packs';
+import { TelemetryEngine } from './telemetry';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -33,6 +36,9 @@ let lastPorts: PortEntry[] = [];
 let hasScannedOnce = false;
 let scanInFlight: Promise<PortsUpdate> | null = null;
 let refreshTimer: NodeJS.Timeout | null = null;
+let eventStore: EventStore | null = null;
+const telemetry = new TelemetryEngine();
+const knowledgePacks = new KnowledgePackRegistry();
 
 /** Paths seen in the last scan — the only paths open-location will accept. */
 const knownPaths = new Set<string>();
@@ -44,18 +50,33 @@ async function runScan(): Promise<PortsUpdate> {
   scanInFlight = (async () => {
     try {
       const result = await scanPorts();
+      const enrichment = await knowledgePacks.enrich(
+        result.ports,
+        getSettings().enableKnowledgePacks,
+      );
       const diff = diffScans(lastPorts, result.ports);
+      const events = telemetry.apply(result.ports, diff, result.timestamp);
       lastPorts = result.ports;
+
+      if (eventStore) await eventStore.append(events);
 
       knownPaths.clear();
       for (const p of result.ports) {
         if (p.processPath) knownPaths.add(p.processPath);
       }
 
-      const update: PortsUpdate = { ...result, diff };
+      const update: PortsUpdate = {
+        ...result,
+        diff,
+        events,
+        knowledgePacks: enrichment.summaries,
+      };
       mainWindow?.webContents.send(IPC.portsUpdated, update);
       updateTrayTooltip();
-      if (hasScannedOnce) notifyNewListeners(update);
+      if (hasScannedOnce) {
+        notifyNewListeners(update);
+        notifyWatchedPorts(update);
+      }
       hasScannedOnce = true;
       return update;
     } finally {
@@ -100,7 +121,39 @@ function notifyNewListeners(update: PortsUpdate): void {
       ? `${first.processName} (PID ${first.pid})${first.serviceLabel ? ` — ${first.serviceLabel}` : ''}`
       : newListeners.map((p) => `${p.localPort} (${p.processName})`).join(', ');
 
-  new Notification({ title, body, icon: iconPath }).show();
+  try {
+    new Notification({ title, body, icon: iconPath }).show();
+  } catch (error) {
+    console.error('[Main] Listener notification failed:', error);
+  }
+}
+
+function notifyWatchedPorts(update: PortsUpdate): void {
+  if (!Notification.isSupported()) return;
+  const watched = new Set(getSettings().watchedPortKeys);
+  const relevant = update.events.filter(
+    (event) =>
+      watched.has(watchedPortKey(event.port)) &&
+      ['port.opened', 'port.closed', 'port.owner-changed', 'port.exposure-changed'].includes(
+        event.type,
+      ),
+  );
+  if (relevant.length === 0) return;
+  const event = relevant[0];
+  const action = event.type.replace('port.', '').replace('-', ' ');
+  try {
+    new Notification({
+      title: `Watched port ${event.port.localPort}: ${action}`,
+      body: `${event.port.protocol} · ${event.port.processName} · ${event.port.localAddress}`,
+      icon: iconPath,
+    }).show();
+  } catch (error) {
+    console.error('[Main] Watched-port notification failed:', error);
+  }
+}
+
+function watchedPortKey(port: PortEntry): string {
+  return `${port.protocol}:${port.localPort}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +275,28 @@ function registerIpc(): void {
     return { success: true };
   });
 
+  ipcMain.handle(IPC.openLocalEndpoint, async (_event, id: unknown) => {
+    try {
+      if (typeof id !== 'string') return { success: false, error: 'Invalid endpoint' };
+      const port = lastPorts.find((entry) => entry.id === id);
+      if (!port || port.protocol !== 'TCP' || port.state !== 'LISTENING') {
+        return { success: false, error: 'Endpoint is not an active TCP listener' };
+      }
+      const rawHost =
+        port.exposure === 'all-interfaces'
+          ? '127.0.0.1'
+          : port.localAddress.replace('%', '%25');
+      const host = rawHost.includes(':') ? `[${rawHost}]` : rawHost;
+      const scheme = [443, 8443].includes(port.localPort) ? 'https' : 'http';
+      await shell.openExternal(`${scheme}://${host}:${port.localPort}/`);
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[Main] Opening local endpoint failed:', message);
+      return { success: false, error: message };
+    }
+  });
+
   ipcMain.handle(IPC.copyText, (_event, text: unknown) => {
     if (typeof text !== 'string' || text.length > 10000) {
       return { success: false, error: 'Invalid text' };
@@ -270,10 +345,21 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.getSettings, () => getSettings());
 
+  ipcMain.handle(IPC.getRecentEvents, (_event, limit: unknown) => {
+    const safeLimit = typeof limit === 'number' && Number.isFinite(limit) ? limit : 500;
+    return eventStore?.getRecent(safeLimit) ?? [];
+  });
+
   ipcMain.handle(IPC.setSettings, (_event, patch: unknown) => {
+    const previous = getSettings();
     const settings = updateSettings(patch);
     nativeTheme.themeSource = settings.theme;
     applyAutoRefresh(settings);
+    if (previous.enableKnowledgePacks !== settings.enableKnowledgePacks) {
+      void runScan().catch((error) =>
+        console.error('[Main] Scan after knowledge-pack setting change failed:', error),
+      );
+    }
     return settings;
   });
 }
@@ -290,6 +376,11 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     const settings = await loadSettings();
     nativeTheme.themeSource = settings.theme;
+
+    eventStore = new EventStore(join(app.getPath('userData'), 'telemetry', 'events.jsonl'));
+    await eventStore.initialize();
+    const previousEvents = eventStore.getRecent(1);
+    if (previousEvents[0]) telemetry.hydrateSequence(previousEvents[0].sequence);
 
     registerIpc();
     createWindow();
