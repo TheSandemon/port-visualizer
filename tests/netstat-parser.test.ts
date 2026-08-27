@@ -45,6 +45,12 @@ describe('splitAddress', () => {
 describe('parseNetstat', () => {
   const sockets = parseNetstat(FIXTURE);
 
+  it('does not treat an IPv6 wildcard port zero as a remote peer', () => {
+    const wildcard = parseNetstat('TCP    [::]:135    [::]:0    LISTENING    42');
+    expect(wildcard[0].remoteAddress).toBeNull();
+    expect(wildcard[0].remotePort).toBeNull();
+  });
+
   it('parses TCP and UDP entries, skipping port 0 and garbage', () => {
     expect(sockets).toHaveLength(10);
     expect(sockets.filter((s) => s.protocol === 'TCP')).toHaveLength(8);

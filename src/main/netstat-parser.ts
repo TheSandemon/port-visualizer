@@ -1,6 +1,7 @@
 import type { PortEntry, Protocol } from '../shared/types';
 import { portEntryId } from '../shared/port-id';
 import { lookupServiceLabel } from '../shared/known-ports';
+import { withObservationFields } from '../shared/observation';
 
 interface RawSocket {
   protocol: Protocol;
@@ -49,7 +50,9 @@ export function parseNetstat(output: string): RawSocket[] {
       const pid = Number.parseInt(parts[4], 10);
       if (!local || local.port === 0 || !Number.isInteger(pid)) continue;
 
-      const hasRemote = remote !== null && !(remote.address === '0.0.0.0' && remote.port === 0);
+      const hasRemote =
+        remote !== null &&
+        !(['0.0.0.0', '::', '*'].includes(remote.address) && remote.port === 0);
       sockets.push({
         protocol: 'TCP',
         localAddress: local.address,
@@ -103,22 +106,27 @@ export function buildPortEntries(
     if (byId.has(id)) continue;
 
     const proc = processes.get(s.pid);
-    byId.set(id, {
+    byId.set(
       id,
-      protocol: s.protocol,
-      localAddress: s.localAddress,
-      localPort: s.localPort,
-      remoteAddress: s.remoteAddress,
-      remotePort: s.remotePort,
-      state: s.state,
-      pid: s.pid,
-      processName: proc?.name ?? (s.pid === 0 ? 'System Idle' : s.pid === 4 ? 'System' : 'Unknown'),
-      processPath: proc?.path ?? null,
-      memory: proc?.memory ?? 0,
-      parentPid: proc?.parentPid ?? null,
-      commandLine: proc?.commandLine ?? null,
-      serviceLabel: lookupServiceLabel(s.localPort),
-    });
+      withObservationFields({
+        id,
+        protocol: s.protocol,
+        localAddress: s.localAddress,
+        localPort: s.localPort,
+        remoteAddress: s.remoteAddress,
+        remotePort: s.remotePort,
+        state: s.state,
+        pid: s.pid,
+        processName:
+          proc?.name ??
+          (s.pid === 0 ? 'System Idle' : s.pid === 4 ? 'System' : `Process ${s.pid}`),
+        processPath: proc?.path ?? null,
+        memory: proc?.memory ?? 0,
+        parentPid: proc?.parentPid ?? null,
+        commandLine: proc?.commandLine ?? null,
+        serviceLabel: lookupServiceLabel(s.localPort),
+      }),
+    );
   }
 
   return Array.from(byId.values()).sort(

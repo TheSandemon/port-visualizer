@@ -18,6 +18,9 @@ function entry(id: string, state = 'LISTENING'): PortEntry {
     parentPid: null,
     commandLine: null,
     serviceLabel: null,
+    exposure: 'loopback',
+    attributes: {},
+    annotations: [],
   };
 }
 

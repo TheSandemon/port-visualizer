@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 — 2026-08-27
+
+### Added
+- Open observation fields, source-attributed annotations, and rolling port telemetry.
+- Persistent, versioned JSONL events for port opens, closes, and state changes.
+- Live lifecycle signal, exposure metrics/filtering, and observation duration.
+- Reloadable knowledge packs from built-in, user, and workspace directories.
+- JSON Schema and contributor documentation for knowledge packs.
+- Command-line credential redaction before persistence or renderer delivery.
+- Per-port connection rate, restart count, state-change count, owner count, and collision signals.
+- Watch controls with lifecycle, ownership, and exposure-change notifications.
+- Copy-address, open-listener, reveal-folder, and process-kill controls on every applicable port.
+
+### Changed
+- Reframed the interface as a port-first live network instrument.
+- Distinguished loopback, LAN, and all-interface bindings throughout the UI.
+- Knowledge about AI and other fast-changing services is now data-driven and optional.
+- Default sorting now surfaces the highest-memory port owners first.
+- The telemetry header is compact and metric-first, without hero copy.
+
+### Fixed
+- IPv6 wildcard port-zero endpoints appearing as remote peers in netstat fallback scans.
+- Kill actions appearing for protected system PIDs.
+- Missing process names and memory caused by transient PIDs invalidating an otherwise valid
+  PowerShell result; partial process metadata is now retained and cached.
+
 ## 1.0.0 — 2026-07-12
 
 Initial release of the Port Visualizer dashboard.

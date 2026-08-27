@@ -17,6 +17,9 @@ const sample: PortEntry = {
   parentPid: null,
   commandLine: null,
   serviceLabel: 'http',
+  exposure: 'loopback',
+  attributes: {},
+  annotations: [],
 };
 
 describe('csvEscape', () => {

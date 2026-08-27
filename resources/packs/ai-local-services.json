@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "community.ai-local-services",
+  "name": "Local AI service hints",
+  "version": 1,
+  "enabledByDefault": true,
+  "rules": [
+    {
+      "id": "ollama-process",
+      "when": { "all": [{ "field": "process.name", "contains": "ollama" }] },
+      "annotate": { "service.family": "ollama", "service.kind": "model-api" },
+      "confidence": 0.95
+    },
+    {
+      "id": "lm-studio-process",
+      "when": { "all": [{ "field": "process.name", "contains": "lm studio" }] },
+      "annotate": { "service.family": "lm-studio", "service.kind": "model-api" },
+      "confidence": 0.95
+    },
+    {
+      "id": "vllm-command",
+      "when": { "all": [{ "field": "process.commandLine", "contains": "vllm" }] },
+      "annotate": { "service.family": "vllm", "service.kind": "model-api" },
+      "confidence": 0.82
+    },
+    {
+      "id": "llama-cpp-command",
+      "when": { "all": [{ "field": "process.commandLine", "contains": "llama-server" }] },
+      "annotate": { "service.family": "llama.cpp", "service.kind": "model-api" },
+      "confidence": 0.9
+    },
+    {
+      "id": "mcp-http-command",
+      "when": { "all": [{ "field": "process.commandLine", "contains": "mcp" }] },
+      "annotate": { "service.hint": "mcp", "transport.hint": "network" },
+      "confidence": 0.55
+    }
+  ]
+}
