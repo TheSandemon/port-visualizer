@@ -11,7 +11,29 @@ const CSV_COLUMNS: Array<[header: string, get: (p: PortEntry) => string | number
   ['Process', (p) => p.processName],
   ['Path', (p) => p.processPath],
   ['Service', (p) => p.serviceLabel],
+  ['Publisher', (p) => publisherText(p)],
+  ['Signature', (p) => p.signature?.status ?? 'checking'],
+  ['Firewall', (p) => p.firewall?.disposition ?? 'checking'],
+  ['Parent Chain', (p) => (p.ancestors ?? []).map((a) => `${a.name} (${a.pid})`).join(' < ')],
+  ['Command Line', (p) => p.commandLine],
 ];
+
+/** Publisher text used everywhere a signature is displayed or exported. */
+export function publisherText(port: PortEntry): string {
+  const signature = port.signature;
+  if (!signature) return 'Checking…';
+  if (signature.publisher) return signature.publisher;
+  switch (signature.status) {
+    case 'unsigned':
+      return 'Unsigned';
+    case 'tampered':
+      return 'Signature does not match binary';
+    case 'untrusted':
+      return 'Untrusted signer';
+    default:
+      return 'Unknown publisher';
+  }
+}
 
 export function csvEscape(value: string | number | null): string {
   if (value === null) return '';

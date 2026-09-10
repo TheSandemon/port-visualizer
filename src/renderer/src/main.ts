@@ -1,12 +1,15 @@
 import './styles.css';
 import type {
   AppSettings,
+  EnrichmentUpdate,
   Exposure,
+  FilterPreset,
   PortEntry,
   PortEvent,
   PortsUpdate,
   ViewMode,
 } from '../../shared/types';
+import { publisherText } from '../../shared/export';
 
 // ---------------------------------------------------------------------------
 // State
@@ -19,6 +22,9 @@ let lastDiffAdded = new Set<string>();
 let lastDiffChanged = new Set<string>();
 let history: PortEvent[] = [];
 const HISTORY_LIMIT = 500;
+
+/** Timestamp of the last time the window had focus, for the "since" counter. */
+let lastLookAt = Date.now();
 
 // ---------------------------------------------------------------------------
 // DOM lookups
@@ -44,14 +50,21 @@ const viewButtons: Record<ViewMode, HTMLButtonElement> = {
   cards: $<HTMLButtonElement>('viewCards'),
   table: $<HTMLButtonElement>('viewTable'),
   process: $<HTMLButtonElement>('viewProcess'),
+  timeline: $<HTMLButtonElement>('viewTimeline'),
 };
 const cardsView = $('cardsView');
 const tableView = $('tableView');
 const tableBody = $('tableBody');
 const processView = $('processView');
+const timelineView = $('timelineView');
+const timelineRange = $<HTMLSelectElement>('timelineRange');
+const timelineAxis = $('timelineAxis');
+const timelineLanes = $('timelineLanes');
+const timelineEmpty = $('timelineEmpty');
 const emptyState = $('emptyState');
 const historyPanel = $('historyPanel');
 const historyList = $('historyList');
+const presetSelect = $<HTMLSelectElement>('presetSelect');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,6 +124,54 @@ function isWatched(port: PortEntry): boolean {
   return settings?.watchedPortKeys.includes(watchedPortKey(port)) ?? false;
 }
 
+/** A listening port absent from a captured baseline. */
+function isOffBaseline(port: PortEntry): boolean {
+  if (!settings || settings.baselineCapturedAt === 0 || port.state !== 'LISTENING') return false;
+  return !settings.baselinePortKeys.includes(watchedPortKey(port));
+}
+
+/** Trust class driving the publisher colour; unsigned is a signal, not an error. */
+function signatureClass(port: PortEntry): string {
+  switch (port.signature?.status) {
+    case 'valid':
+      return 'trusted';
+    case 'unsigned':
+      return 'unsigned';
+    case 'tampered':
+    case 'untrusted':
+      return 'suspect';
+    case 'unavailable':
+      return 'unknown';
+    default:
+      return 'pending';
+  }
+}
+
+function firewallLabel(port: PortEntry): string {
+  switch (port.firewall?.disposition) {
+    case 'blocked':
+      return 'Blocked';
+    case 'allowed':
+      return 'Allowed';
+    case 'no-rule':
+      return 'No rule';
+    case 'unavailable':
+      return 'Unavailable';
+    default:
+      return 'Checking…';
+  }
+}
+
+function firewallTitle(port: PortEntry): string {
+  const rules = port.firewall?.ruleNames ?? [];
+  if (rules.length === 0) return 'No inbound firewall rule matches this port';
+  return `Inbound rules: ${rules.slice(0, 6).join(', ')}${rules.length > 6 ? '…' : ''}`;
+}
+
+function isBlockedByUs(port: PortEntry): boolean {
+  return port.firewall?.disposition === 'blocked';
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string,
@@ -158,7 +219,8 @@ function computeVisible(): void {
     if (term) {
       const haystack =
         `${p.localPort} ${p.processName} ${p.localAddress} ${p.remoteAddress ?? ''} ` +
-        `${p.serviceLabel ?? ''} ${p.pid} ${p.exposure} ${annotationText(p)}`.toLowerCase();
+        `${p.serviceLabel ?? ''} ${p.pid} ${p.exposure} ${annotationText(p)} ` +
+        `${publisherText(p)} ${(p.ancestors ?? []).map((a) => a.name).join(' ')}`.toLowerCase();
       if (!haystack.includes(term)) return false;
     }
     return true;
@@ -173,6 +235,8 @@ function computeVisible(): void {
         return a.state.localeCompare(b.state) || a.localPort - b.localPort;
       case 'memory':
         return b.memory - a.memory || a.localPort - b.localPort;
+      case 'publisher':
+        return publisherText(a).localeCompare(publisherText(b)) || a.localPort - b.localPort;
       default:
         return a.localPort - b.localPort || a.localAddress.localeCompare(b.localAddress);
     }
@@ -185,7 +249,20 @@ function computeVisible(): void {
 
 /** Signature of the mutable parts of an entry; unchanged rows are not rebuilt. */
 function entrySignature(p: PortEntry): string {
-  return `${p.state}|${p.memory}|${p.processName}|${p.remoteAddress}:${p.remotePort}|${p.exposure}|${annotationText(p)}|${p.telemetry?.localConnectionCount ?? 0}|${isWatched(p)}`;
+  return [
+    p.state,
+    p.memory,
+    p.processName,
+    `${p.remoteAddress}:${p.remotePort}`,
+    p.exposure,
+    annotationText(p),
+    p.telemetry?.localConnectionCount ?? 0,
+    isWatched(p),
+    isOffBaseline(p),
+    publisherText(p),
+    p.firewall?.disposition ?? '',
+    (p.ancestors ?? []).map((a) => a.pid).join('>'),
+  ].join('|');
 }
 
 /**
@@ -269,6 +346,16 @@ function buildActions(p: PortEntry): HTMLElement {
   });
   actions.appendChild(watchBtn);
 
+  if (p.state === 'LISTENING') {
+    const blocked = isBlockedByUs(p);
+    const fwBtn = el('button', `action-btn${blocked ? ' watched' : ''}`, blocked ? 'Unblock' : 'Block');
+    fwBtn.title = blocked
+      ? 'Remove the inbound firewall block for this port'
+      : 'Add an inbound firewall block rule for this port';
+    fwBtn.addEventListener('click', () => openFirewallModal(p, !blocked));
+    actions.appendChild(fwBtn);
+  }
+
   if (p.pid > 4) {
     const killBtn = el('button', 'action-btn danger', 'Kill');
     killBtn.title = 'Kill this process';
@@ -291,6 +378,16 @@ function buildCard(p: PortEntry): HTMLElement {
   header.appendChild(portSpan);
   if (p.serviceLabel) header.appendChild(el('span', 'service-badge', p.serviceLabel));
   if (isWatched(p)) header.appendChild(el('span', 'watch-badge', 'Watched'));
+  if (isOffBaseline(p)) {
+    const badge = el('span', 'baseline-badge', 'Off baseline');
+    badge.title = 'This listener was not present when the baseline was captured';
+    header.appendChild(badge);
+  }
+  if (isBlockedByUs(p)) {
+    const badge = el('span', 'firewall-badge blocked', 'Blocked');
+    badge.title = firewallTitle(p);
+    header.appendChild(badge);
+  }
   if (p.telemetry?.hasCollision) {
     header.appendChild(el('span', 'collision-badge', `${p.telemetry.ownerCount} owners`));
   }
@@ -312,7 +409,33 @@ function buildCard(p: PortEntry): HTMLElement {
   stateRow.appendChild(el('span', `state-badge ${stateClass(p.state)}`, p.state));
   details.appendChild(stateRow);
   row('Process', p.processName, 'strong');
+
+  // The publisher line is unconditional: an absent or unverifiable signature is
+  // exactly the case a reader most needs to see.
+  const publisherRow = el('div', 'detail-row');
+  publisherRow.appendChild(el('span', 'detail-label', 'Publisher'));
+  const publisherValue = el('span', `detail-value publisher ${signatureClass(p)}`, publisherText(p));
+  publisherValue.title = p.processPath
+    ? `Authenticode status: ${p.signature?.status ?? 'checking'}`
+    : 'No executable path available for this process';
+  publisherRow.appendChild(publisherValue);
+  details.appendChild(publisherRow);
+
+  const firewallRow = el('div', 'detail-row');
+  firewallRow.appendChild(el('span', 'detail-label', 'Firewall'));
+  const firewallValue = el(
+    'span',
+    `detail-value firewall-${p.firewall?.disposition ?? 'pending'}`,
+    firewallLabel(p),
+  );
+  firewallValue.title = firewallTitle(p);
+  firewallRow.appendChild(firewallValue);
+  details.appendChild(firewallRow);
+
   row('PID', String(p.pid));
+  if (p.ancestors && p.ancestors.length > 0) {
+    row('Started by', p.ancestors.map((a) => `${a.name} (${a.pid})`).join(' ← '));
+  }
   row('Local', formatEndpoint(p.localAddress, p.localPort));
   if (p.remoteAddress) row('Remote', formatEndpoint(p.remoteAddress, p.remotePort));
   row('Memory', formatBytes(p.memory));
@@ -339,6 +462,14 @@ function buildCard(p: PortEntry): HTMLElement {
     r.appendChild(el('span', 'detail-label', 'Path'));
     const v = el('span', 'detail-value path', p.processPath);
     v.title = p.processPath;
+    r.appendChild(v);
+    details.appendChild(r);
+  }
+  if (p.commandLine) {
+    const r = el('div', 'detail-row');
+    r.appendChild(el('span', 'detail-label', 'Command'));
+    const v = el('span', 'detail-value path', p.commandLine);
+    v.title = p.commandLine;
     r.appendChild(v);
     details.appendChild(r);
   }
@@ -380,6 +511,10 @@ function buildRow(p: PortEntry): HTMLElement {
   td(p.localAddress);
   td(p.remoteAddress ? formatEndpoint(p.remoteAddress, p.remotePort) : '–');
   td(exposureLabel(p.exposure), `exposure-text exposure-${p.exposure}`);
+  const publisherCell = td(publisherText(p), `publisher ${signatureClass(p)}`);
+  publisherCell.title = `Authenticode status: ${p.signature?.status ?? 'checking'}`;
+  const firewallCell = td(firewallLabel(p), `firewall-${p.firewall?.disposition ?? 'pending'}`);
+  firewallCell.title = firewallTitle(p);
   td(formatBytes(p.memory));
   td(p.serviceLabel ?? '–');
   const actionCell = el('td', 'row-actions');
@@ -411,8 +546,12 @@ function renderProcessView(): void {
     const groupEl = el('div', 'process-group');
     groupEl.dataset.id = `proc-${g.pid}`;
 
+    const sample = g.entries[0];
     const head = el('div', 'process-head');
     head.appendChild(el('span', 'process-name', g.name));
+    const publisher = el('span', `process-publisher ${signatureClass(sample)}`, publisherText(sample));
+    publisher.title = `Authenticode status: ${sample.signature?.status ?? 'checking'}`;
+    head.appendChild(publisher);
     head.appendChild(
       el(
         'span',
@@ -420,7 +559,15 @@ function renderProcessView(): void {
         `PID ${g.pid} · ${formatBytes(g.memory)} · ${g.entries.length} socket${g.entries.length === 1 ? '' : 's'}`,
       ),
     );
-    const sample = g.entries[0];
+    if (sample.ancestors && sample.ancestors.length > 0) {
+      head.appendChild(
+        el(
+          'span',
+          'process-parents',
+          `← ${sample.ancestors.map((a) => `${a.name} (${a.pid})`).join(' ← ')}`,
+        ),
+      );
+    }
     head.appendChild(buildActions(sample));
     groupEl.appendChild(head);
 
@@ -447,16 +594,20 @@ function render(): void {
   cardsView.classList.toggle('hidden', mode !== 'cards');
   tableView.classList.toggle('hidden', mode !== 'table');
   processView.classList.toggle('hidden', mode !== 'process');
+  timelineView.classList.toggle('hidden', mode !== 'timeline');
   for (const [name, btn] of Object.entries(viewButtons)) {
     btn.classList.toggle('active', name === mode);
     btn.setAttribute('aria-selected', String(name === mode));
   }
 
-  emptyState.classList.toggle('hidden', visiblePorts.length > 0);
+  // The timeline draws from event history, which is meaningful even when the
+  // current filter matches nothing.
+  emptyState.classList.toggle('hidden', visiblePorts.length > 0 || mode === 'timeline');
 
   if (mode === 'cards') reconcile(cardsView, visiblePorts, buildCard);
   else if (mode === 'table') reconcile(tableBody, visiblePorts, buildRow);
-  else renderProcessView();
+  else if (mode === 'process') renderProcessView();
+  else renderTimeline();
 
   updateFooter();
   updateTelemetryHeader();
@@ -469,6 +620,11 @@ function updateFooter(): void {
   $('statEstablished').textContent =
     `${visiblePorts.filter((p) => p.state === 'ESTABLISHED').length} established`;
   $('statProcesses').textContent = `${new Set(visiblePorts.map((p) => p.pid)).size} processes`;
+
+  const since = history.filter((event) => event.timestamp > lastLookAt).length;
+  const sinceEl = $('statSinceLastLook');
+  sinceEl.classList.toggle('hidden', since === 0);
+  sinceEl.textContent = `${since} change${since === 1 ? '' : 's'} since you last looked`;
 }
 
 function updateTelemetryHeader(): void {
@@ -497,6 +653,97 @@ function renderSignalRail(): void {
     mark.style.height = `${event.type === 'port.changed' ? 48 : event.type === 'port.closed' ? 66 : 84}%`;
     mark.title = `${new Date(event.timestamp).toLocaleTimeString()} · ${event.type.replace('port.', '')} · ${event.port.protocol} ${event.port.localPort} · ${event.port.processName}`;
     rail.appendChild(mark);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Timeline view
+// ---------------------------------------------------------------------------
+
+interface TimelineLane {
+  key: string;
+  label: string;
+  processName: string;
+  events: PortEvent[];
+}
+
+/** Group events into one lane per protocol/port, busiest lane first. */
+function buildTimelineLanes(events: PortEvent[]): TimelineLane[] {
+  const lanes = new Map<string, TimelineLane>();
+  for (const event of events) {
+    const key = `${event.port.protocol}:${event.port.localPort}`;
+    let lane = lanes.get(key);
+    if (!lane) {
+      lane = {
+        key,
+        label: `${event.port.protocol} ${event.port.localPort}`,
+        processName: event.port.processName,
+        events: [],
+      };
+      lanes.set(key, lane);
+    }
+    lane.events.push(event);
+    // The newest event names the lane, so a port that changed hands shows the
+    // owner it has now rather than the one it had first.
+    lane.processName = event.port.processName;
+  }
+  return [...lanes.values()].sort(
+    (a, b) => b.events.length - a.events.length || a.label.localeCompare(b.label),
+  );
+}
+
+const MAX_TIMELINE_LANES = 40;
+
+function renderTimeline(): void {
+  const span = Number(timelineRange.value) || 3_600_000;
+  const now = Date.now();
+  const start = now - span;
+  const windowed = history.filter((event) => event.timestamp >= start);
+
+  timelineEmpty.classList.toggle('hidden', windowed.length > 0);
+  timelineAxis.replaceChildren();
+  timelineLanes.replaceChildren();
+
+  $('timelineSummary').textContent =
+    windowed.length === 0
+      ? ''
+      : `${windowed.length} event${windowed.length === 1 ? '' : 's'} across ${new Set(windowed.map((e) => `${e.port.protocol}:${e.port.localPort}`)).size} ports`;
+
+  if (windowed.length === 0) return;
+
+  const ticks = 6;
+  for (let index = 0; index <= ticks; index += 1) {
+    const at = start + (span * index) / ticks;
+    const tick = el('span', 'timeline-tick', new Date(at).toLocaleTimeString());
+    tick.style.left = `${(index / ticks) * 100}%`;
+    timelineAxis.appendChild(tick);
+  }
+
+  const lanes = buildTimelineLanes(windowed);
+  for (const lane of lanes.slice(0, MAX_TIMELINE_LANES)) {
+    const laneEl = el('div', 'timeline-lane');
+
+    const label = el('div', 'timeline-label');
+    label.appendChild(el('span', 'timeline-port', lane.label));
+    label.appendChild(el('span', 'timeline-process', lane.processName));
+    laneEl.appendChild(label);
+
+    const track = el('div', 'timeline-track');
+    for (const event of lane.events) {
+      const kind = event.type.replace('port.', '');
+      const mark = el('span', `timeline-mark ${kind}`);
+      mark.style.left = `${Math.min(100, Math.max(0, ((event.timestamp - start) / span) * 100))}%`;
+      mark.title = `${new Date(event.timestamp).toLocaleTimeString()} · ${kind} · ${event.port.processName} (PID ${event.port.pid}) · ${event.port.state}`;
+      track.appendChild(mark);
+    }
+    laneEl.appendChild(track);
+    timelineLanes.appendChild(laneEl);
+  }
+
+  if (lanes.length > MAX_TIMELINE_LANES) {
+    timelineLanes.appendChild(
+      el('div', 'timeline-overflow', `${lanes.length - MAX_TIMELINE_LANES} quieter ports not shown`),
+    );
   }
 }
 
@@ -557,10 +804,49 @@ const killTreeCheck = $<HTMLInputElement>('killTreeCheck');
 let killTarget: PortEntry | null = null;
 let killElevated = false;
 
+/** Set when the modal is confirming a firewall change rather than a kill. */
+let firewallTarget: { port: PortEntry; block: boolean } | null = null;
+
+function openFirewallModal(p: PortEntry, block: boolean): void {
+  killTarget = null;
+  firewallTarget = { port: p, block };
+  killTreeCheck.checked = false;
+  killTreeCheck.parentElement?.classList.add('hidden');
+  $('modalTitle').textContent = block
+    ? `Block inbound traffic to port ${p.localPort}?`
+    : `Remove the block on port ${p.localPort}?`;
+  $('modalBody').textContent = block
+    ? `Windows will drop inbound ${p.protocol} connections to port ${p.localPort} ` +
+      `(currently owned by ${p.processName}). This changes the firewall for every program, ` +
+      'not just this process, and needs administrator rights.'
+    : `The inbound block rule this app created for ${p.protocol} port ${p.localPort} will be ` +
+      'removed. This needs administrator rights.';
+  $('modalConfirm').textContent = block ? 'Block port' : 'Remove block';
+  modalOverlay.classList.remove('hidden');
+  $('modalConfirm').focus();
+}
+
+async function confirmFirewall(): Promise<void> {
+  if (!firewallTarget) return;
+  const { port, block } = firewallTarget;
+  const result = await window.electronAPI.setPortBlocked(port.protocol, port.localPort, block);
+  closeKillModal();
+  if (result.success) {
+    showToast(
+      `${block ? 'Blocked' : 'Unblocked'} ${port.protocol} port ${port.localPort}`,
+      'success',
+    );
+  } else {
+    showToast(`Firewall change failed: ${result.error}`, 'error');
+  }
+}
+
 function openKillModal(p: PortEntry): void {
   killTarget = p;
+  firewallTarget = null;
   killElevated = false;
   killTreeCheck.checked = false;
+  killTreeCheck.parentElement?.classList.remove('hidden');
   $('modalTitle').textContent = `Kill ${p.processName}?`;
   $('modalBody').textContent =
     `PID ${p.pid} owns ${p.protocol} port ${p.localPort}. ` +
@@ -573,6 +859,7 @@ function openKillModal(p: PortEntry): void {
 function closeKillModal(): void {
   modalOverlay.classList.add('hidden');
   killTarget = null;
+  firewallTarget = null;
 }
 
 async function confirmKill(): Promise<void> {
@@ -637,6 +924,22 @@ function applyUpdate(update: PortsUpdate): void {
     `${update.knowledgePacks.length} knowledge pack${update.knowledgePacks.length === 1 ? '' : 's'}`;
 }
 
+/**
+ * Merge the background publisher and firewall results into the ports already
+ * on screen. Scans stay fast because these lookups never block them.
+ */
+function applyEnrichment(update: EnrichmentUpdate): void {
+  for (const port of allPorts) {
+    if (port.processPath) {
+      const signature = update.signatures[port.processPath];
+      if (signature) port.signature = signature;
+    }
+    const firewall = update.firewall[`${port.protocol}:${port.localPort}`];
+    if (firewall) port.firewall = firewall;
+  }
+  render();
+}
+
 // ---------------------------------------------------------------------------
 // Settings wiring
 // ---------------------------------------------------------------------------
@@ -654,6 +957,81 @@ function syncSettingsUi(): void {
   $<HTMLInputElement>('settingNotify').checked = settings.notifyNewListeners;
   $<HTMLInputElement>('settingTray').checked = settings.minimizeToTray;
   $<HTMLInputElement>('settingKnowledge').checked = settings.enableKnowledgePacks;
+  $<HTMLInputElement>('settingBaselineNotify').checked = settings.notifyOffBaseline;
+  $('baselineStatus').textContent =
+    settings.baselineCapturedAt === 0
+      ? 'No baseline captured.'
+      : `Baseline of ${settings.baselinePortKeys.length} listeners captured ${new Date(settings.baselineCapturedAt).toLocaleString()}.`;
+  syncPresetOptions();
+}
+
+// ---------------------------------------------------------------------------
+// Filter presets
+// ---------------------------------------------------------------------------
+
+function syncPresetOptions(): void {
+  const selected = presetSelect.value;
+  presetSelect.replaceChildren();
+  const placeholder = el('option', undefined, 'Presets…');
+  placeholder.value = '';
+  presetSelect.appendChild(placeholder);
+  for (const preset of settings?.filterPresets ?? []) {
+    const option = el('option', undefined, preset.name);
+    option.value = preset.id;
+    presetSelect.appendChild(option);
+  }
+  presetSelect.value = (settings?.filterPresets ?? []).some((p) => p.id === selected)
+    ? selected
+    : '';
+}
+
+function applyPreset(preset: FilterPreset): void {
+  searchInput.value = preset.search;
+  protocolFilter.value = preset.protocol;
+  stateFilter.value = preset.state;
+  exposureFilter.value = preset.exposure;
+  sortBy.value = preset.sort;
+  render();
+}
+
+async function saveCurrentPreset(): Promise<void> {
+  const name = window.prompt('Name this filter preset');
+  if (name === null) return;
+  const trimmed = name.trim().slice(0, 60);
+  if (!trimmed) {
+    showToast('Preset needs a name', 'error');
+    return;
+  }
+
+  const existing = settings?.filterPresets ?? [];
+  const preset: FilterPreset = {
+    // Reuse the id when overwriting by name so the selection stays put.
+    id: existing.find((p) => p.name === trimmed)?.id ?? `preset-${Date.now().toString(36)}`,
+    name: trimmed,
+    search: searchInput.value,
+    protocol: protocolFilter.value,
+    state: stateFilter.value,
+    exposure: exposureFilter.value,
+    sort: sortBy.value,
+  };
+
+  await patchSettings({
+    filterPresets: [...existing.filter((p) => p.id !== preset.id), preset],
+  });
+  presetSelect.value = preset.id;
+  showToast(`Preset "${trimmed}" saved`, 'success');
+}
+
+async function deleteSelectedPreset(): Promise<void> {
+  const id = presetSelect.value;
+  if (!id) {
+    showToast('Select a preset first', 'error');
+    return;
+  }
+  await patchSettings({
+    filterPresets: (settings?.filterPresets ?? []).filter((p) => p.id !== id),
+  });
+  showToast('Preset deleted', 'success');
 }
 
 // ---------------------------------------------------------------------------
@@ -709,7 +1087,10 @@ $('historyBtn').addEventListener('click', () => {
 $('historyCloseBtn').addEventListener('click', () => historyPanel.classList.add('hidden'));
 
 $('modalCancel').addEventListener('click', closeKillModal);
-$('modalConfirm').addEventListener('click', () => void confirmKill());
+$('modalConfirm').addEventListener('click', () => {
+  if (firewallTarget) void confirmFirewall();
+  else void confirmKill();
+});
 modalOverlay.addEventListener('click', (e) => {
   if (e.target === modalOverlay) closeKillModal();
 });
@@ -732,6 +1113,31 @@ $<HTMLInputElement>('settingKnowledge').addEventListener(
   'change',
   (e) => void patchSettings({ enableKnowledgePacks: (e.target as HTMLInputElement).checked }),
 );
+$<HTMLInputElement>('settingBaselineNotify').addEventListener(
+  'change',
+  (e) => void patchSettings({ notifyOffBaseline: (e.target as HTMLInputElement).checked }),
+);
+$('captureBaselineBtn').addEventListener('click', async () => {
+  settings = await window.electronAPI.captureBaseline();
+  syncSettingsUi();
+  render();
+  showToast(`Baseline captured: ${settings.baselinePortKeys.length} listeners`, 'success');
+});
+
+presetSelect.addEventListener('change', () => {
+  const preset = (settings?.filterPresets ?? []).find((p) => p.id === presetSelect.value);
+  if (preset) applyPreset(preset);
+});
+$('presetSaveBtn').addEventListener('click', () => void saveCurrentPreset());
+$('presetDeleteBtn').addEventListener('click', () => void deleteSelectedPreset());
+timelineRange.addEventListener('change', renderTimeline);
+
+// The marker is dropped when the window loses focus, so returning to the app
+// shows what happened while you were away rather than an always-zero counter.
+window.addEventListener('blur', () => {
+  lastLookAt = Date.now();
+});
+window.addEventListener('focus', updateFooter);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
@@ -751,9 +1157,14 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === '/' && !typing) {
     e.preventDefault();
     searchInput.focus();
-  } else if (!typing && ['1', '2', '3'].includes(e.key)) {
-    const mode: ViewMode = e.key === '1' ? 'cards' : e.key === '2' ? 'table' : 'process';
-    void patchSettings({ viewMode: mode }).then(render);
+  } else if (!typing && ['1', '2', '3', '4'].includes(e.key)) {
+    const modes: Record<string, ViewMode> = {
+      '1': 'cards',
+      '2': 'table',
+      '3': 'process',
+      '4': 'timeline',
+    };
+    void patchSettings({ viewMode: modes[e.key] }).then(render);
   }
 });
 
@@ -762,8 +1173,12 @@ document.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 
 const unsubscribe = window.electronAPI.onPortsUpdated(applyUpdate);
+const unsubscribeEnrichment = window.electronAPI.onEnrichmentUpdated(applyEnrichment);
 window.electronAPI.onScanError((message) => showToast(`Scan error: ${message}`, 'error'));
-window.addEventListener('beforeunload', unsubscribe);
+window.addEventListener('beforeunload', () => {
+  unsubscribe();
+  unsubscribeEnrichment();
+});
 
 void (async () => {
   settings = await window.electronAPI.getSettings();

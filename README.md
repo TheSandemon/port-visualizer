@@ -21,7 +21,13 @@ and safely managing local processes.
 
 - Inspect active TCP and UDP sockets with process, PID, address, state, memory, exposure, and
   executable details.
-- Switch between card, sortable table, and process-grouped views; memory usage is the default sort.
+- See the signed publisher of every owning executable, including when a binary is unsigned,
+  untrusted, or its signature no longer matches.
+- Switch between card, sortable table, process-grouped, and timeline views; memory usage is the
+  default sort.
+- Check the inbound firewall disposition of each listening port and block or unblock it.
+- Capture a baseline of expected listeners and get notified when something new appears.
+- Trace which process started the port owner, and save filter presets for recurring questions.
 - Persist versioned lifecycle telemetry for opens, closes, state changes, owner changes, and
   exposure changes.
 - Measure connection-open rate, restarts, state changes, owner count, collisions, and observation
@@ -38,8 +44,8 @@ and safely managing local processes.
 Requires Windows 10 or 11 on x64.
 
 1. Open the [latest release](https://github.com/TheSandemon/port-visualizer/releases/latest).
-2. Download `Port.Visualizer.Setup.0.3.0.exe` for the installer or
-   `Port.Visualizer.0.3.0.exe` for the portable build.
+2. Download `Port.Visualizer.Setup.0.4.0.exe` for the installer or
+   `Port.Visualizer.0.4.0.exe` for the portable build.
 3. Run the downloaded executable. Windows may show a SmartScreen prompt because the binaries are
    not code-signed.
 
@@ -50,13 +56,17 @@ Requires Windows 10 or 11 on x64.
 | `Ctrl + R` | Refresh connections |
 | `/` | Focus search |
 | `Esc` | Clear search or close a dialog |
-| `1` / `2` / `3` | Cards / table / process view |
+| `1` / `2` / `3` / `4` | Cards / table / process / timeline view |
 
 ## Security model
 
 - The renderer is sandboxed, uses context isolation, and has Node.js integration disabled.
 - Process termination uses argument arrays rather than shell-parsed command strings.
 - File and endpoint controls accept only values returned by the current scan.
+- Firewall rules are only added or removed for a port observed in the current scan, always after
+  an explicit confirmation and a Windows elevation prompt.
+- Publisher and firewall data are read-only queries; a port whose firewall state cannot be read
+  reports "Unavailable" rather than claiming no rule applies.
 - PIDs 0 and 4 are protected from termination.
 - Common command-line credentials are redacted before observations reach history or the renderer.
 

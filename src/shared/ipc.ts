@@ -11,9 +11,12 @@ export const IPC = {
   getSettings: 'get-settings',
   setSettings: 'set-settings',
   getRecentEvents: 'get-recent-events',
+  setPortBlocked: 'set-port-blocked',
+  captureBaseline: 'capture-baseline',
   // main -> renderer pushes
   portsUpdated: 'ports-updated',
   scanError: 'scan-error',
+  enrichmentUpdated: 'enrichment-updated',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

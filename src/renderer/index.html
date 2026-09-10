@@ -24,6 +24,7 @@
             <button id="viewCards" role="tab" title="Card view (1)">Cards</button>
             <button id="viewTable" role="tab" title="Table view (2)">Table</button>
             <button id="viewProcess" role="tab" title="Group by process (3)">Processes</button>
+            <button id="viewTimeline" role="tab" title="Activity timeline (4)">Timeline</button>
           </div>
           <button id="themeBtn" class="btn icon-btn" title="Toggle theme" aria-label="Toggle theme">
             ◐
@@ -87,7 +88,15 @@
           <option value="port">Sort: port</option>
           <option value="process">Sort: process</option>
           <option value="state">Sort: state</option>
+          <option value="publisher">Sort: publisher</option>
         </select>
+        <select id="presetSelect" aria-label="Filter preset" title="Saved filter presets">
+          <option value="">Presets…</option>
+        </select>
+        <button id="presetSaveBtn" class="btn" title="Save the current filters as a preset">
+          Save
+        </button>
+        <button id="presetDeleteBtn" class="btn" title="Delete the selected preset">✕</button>
         <span class="toolbar-spacer"></span>
         <label class="auto-refresh-control">
           <input type="checkbox" id="autoRefreshToggle" />
@@ -119,6 +128,8 @@
                   <th>Local</th>
                   <th>Remote</th>
                   <th>Exposure</th>
+                  <th>Publisher</th>
+                  <th>Firewall</th>
                   <th>Memory</th>
                   <th>Service</th>
                   <th></th>
@@ -128,6 +139,23 @@
             </table>
           </div>
           <div id="processView" class="process-list hidden"></div>
+          <div id="timelineView" class="timeline-view hidden">
+            <div class="timeline-controls">
+              <label for="timelineRange">Window</label>
+              <select id="timelineRange" aria-label="Timeline range">
+                <option value="900000">15m</option>
+                <option value="3600000" selected>1h</option>
+                <option value="21600000">6h</option>
+                <option value="86400000">24h</option>
+              </select>
+              <span id="timelineSummary" class="timeline-summary"></span>
+            </div>
+            <div id="timelineAxis" class="timeline-axis"></div>
+            <div id="timelineLanes" class="timeline-lanes"></div>
+            <div id="timelineEmpty" class="timeline-empty hidden">
+              No lifecycle events recorded in this window yet.
+            </div>
+          </div>
           <div id="emptyState" class="empty-state hidden">
             <span class="empty-glyph">∿</span>
             <h3>No signal here</h3>
@@ -148,6 +176,7 @@
         <span id="statListening">0 listening</span>
         <span id="statEstablished">0 established</span>
         <span id="statProcesses">0 processes</span>
+        <span id="statSinceLastLook" class="stat-since hidden"></span>
         <span class="footer-spacer"></span>
         <span id="scanSource"></span>
         <span id="packStatus">0 knowledge packs</span>
@@ -185,6 +214,17 @@
         <p class="setting-note">
           Packs annotate observations without changing verified operating-system facts.
         </p>
+
+        <h3 class="setting-heading">Baseline</h3>
+        <label class="modal-check"
+          ><input type="checkbox" id="settingBaselineNotify" /> Notify when a listener appears that
+          is not in the baseline</label
+        >
+        <p id="baselineStatus" class="setting-note">No baseline captured.</p>
+        <div class="setting-actions">
+          <button id="captureBaselineBtn" class="btn">Capture current listeners</button>
+        </div>
+
         <div class="modal-actions">
           <button id="settingsClose" class="btn btn-primary">Done</button>
         </div>

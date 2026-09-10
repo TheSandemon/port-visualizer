@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0 — 2026-09-10
+
+### Added
+- Authenticode publisher shown on every port in every view, including when a binary is
+  unsigned, untrusted, or its signature does not match.
+- Inbound firewall disposition per listening port, with block and unblock controls that
+  prompt for elevation.
+- Timeline view (`4`) plotting lifecycle events per port over a selectable window.
+- Owning-process parent chain on cards and process groups.
+- Baseline capture with notifications when a listener appears that is not in the baseline.
+- Saved filter presets in the toolbar.
+- A "changes since you last looked" counter that fills while the window is unfocused.
+- Publisher, signature status, firewall, parent chain, and command line in CSV export.
+
+### Changed
+- Firewall and publisher lookups resolve after a scan on their own IPC channel, so neither
+  delays the socket list.
+
 ## 0.3.0 — 2026-08-27
 
 ### Added
