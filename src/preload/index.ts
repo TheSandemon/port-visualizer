@@ -2,11 +2,13 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/ipc';
 import type {
   AppSettings,
+  EnrichmentUpdate,
   ExportRequest,
   KillResult,
   OkResult,
   PortEvent,
   PortsUpdate,
+  Protocol,
 } from '../shared/types';
 
 export interface ElectronApi {
@@ -20,8 +22,11 @@ export interface ElectronApi {
   getSettings(): Promise<AppSettings>;
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
   getRecentEvents(limit?: number): Promise<PortEvent[]>;
+  setPortBlocked(protocol: Protocol, port: number, blocked: boolean): Promise<OkResult>;
+  captureBaseline(): Promise<AppSettings>;
   onPortsUpdated(callback: (update: PortsUpdate) => void): () => void;
   onScanError(callback: (message: string) => void): () => void;
+  onEnrichmentUpdated(callback: (update: EnrichmentUpdate) => void): () => void;
 }
 
 const api: ElectronApi = {
@@ -35,6 +40,9 @@ const api: ElectronApi = {
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   setSettings: (patch) => ipcRenderer.invoke(IPC.setSettings, patch),
   getRecentEvents: (limit = 500) => ipcRenderer.invoke(IPC.getRecentEvents, limit),
+  setPortBlocked: (protocol, port, blocked) =>
+    ipcRenderer.invoke(IPC.setPortBlocked, protocol, port, blocked),
+  captureBaseline: () => ipcRenderer.invoke(IPC.captureBaseline),
   onPortsUpdated: (callback) => {
     const listener = (_event: unknown, update: PortsUpdate) => callback(update);
     ipcRenderer.on(IPC.portsUpdated, listener);
@@ -44,6 +52,11 @@ const api: ElectronApi = {
     const listener = (_event: unknown, message: string) => callback(message);
     ipcRenderer.on(IPC.scanError, listener);
     return () => ipcRenderer.removeListener(IPC.scanError, listener);
+  },
+  onEnrichmentUpdated: (callback) => {
+    const listener = (_event: unknown, update: EnrichmentUpdate) => callback(update);
+    ipcRenderer.on(IPC.enrichmentUpdated, listener);
+    return () => ipcRenderer.removeListener(IPC.enrichmentUpdated, listener);
   },
 };
 

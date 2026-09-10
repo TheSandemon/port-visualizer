@@ -29,6 +29,34 @@ export interface PortTelemetry {
 
 export type ScanSource = 'powershell' | 'netstat';
 
+/**
+ * Authenticode result for the owning executable. `status` distinguishes a
+ * missing signature from one that exists but does not verify — both render,
+ * so a port never appears without a publisher line.
+ */
+export type SignatureStatus = 'valid' | 'untrusted' | 'tampered' | 'unsigned' | 'unavailable';
+
+export interface ProcessSignature {
+  /** Common name from the signing certificate subject, when one is present. */
+  publisher: string | null;
+  status: SignatureStatus;
+  checkedAt: number;
+}
+
+export type FirewallDisposition = 'blocked' | 'allowed' | 'no-rule' | 'unavailable';
+
+export interface FirewallStatus {
+  /** Block wins over allow, mirroring Windows Firewall evaluation order. */
+  disposition: FirewallDisposition;
+  ruleNames: string[];
+  checkedAt: number;
+}
+
+export interface ProcessAncestor {
+  pid: number;
+  name: string;
+}
+
 export interface PortEntry {
   /** Stable identity: protocol|localAddress|localPort|pid|remote */
   id: string;
@@ -53,6 +81,12 @@ export interface PortEntry {
   /** Source-attributed interpretations supplied by knowledge packs or plugins. */
   annotations: Annotation[];
   telemetry?: PortTelemetry;
+  /** Absent until the background Authenticode pass has reached this path. */
+  signature?: ProcessSignature | null;
+  /** Absent until the background firewall pass has reached this port. */
+  firewall?: FirewallStatus | null;
+  /** Owning process chain, nearest parent first. */
+  ancestors?: ProcessAncestor[];
 }
 
 export type PortEventType =
@@ -102,7 +136,18 @@ export interface KnowledgePackSummary {
 }
 
 export type ThemeSetting = 'system' | 'light' | 'dark';
-export type ViewMode = 'cards' | 'table' | 'process';
+export type ViewMode = 'cards' | 'table' | 'process' | 'timeline';
+
+/** A named capture of the toolbar controls. */
+export interface FilterPreset {
+  id: string;
+  name: string;
+  search: string;
+  protocol: string;
+  state: string;
+  exposure: string;
+  sort: string;
+}
 
 export interface AppSettings {
   theme: ThemeSetting;
@@ -113,6 +158,11 @@ export interface AppSettings {
   minimizeToTray: boolean;
   enableKnowledgePacks: boolean;
   watchedPortKeys: string[];
+  filterPresets: FilterPreset[];
+  /** `PROTO:port` keys accepted as normal for this machine. */
+  baselinePortKeys: string[];
+  baselineCapturedAt: number;
+  notifyOffBaseline: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -124,7 +174,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
   minimizeToTray: false,
   enableKnowledgePacks: true,
   watchedPortKeys: [],
+  filterPresets: [],
+  baselinePortKeys: [],
+  baselineCapturedAt: 0,
+  notifyOffBaseline: false,
 };
+
+/**
+ * Slow lookups resolved after a scan returns. Delivered on their own channel so
+ * a signature or firewall query never delays the socket list.
+ */
+export interface EnrichmentUpdate {
+  /** Keyed by executable path. */
+  signatures: Record<string, ProcessSignature>;
+  /** Keyed by `PROTO:port`. */
+  firewall: Record<string, FirewallStatus>;
+}
 
 export interface KillResult {
   success: boolean;

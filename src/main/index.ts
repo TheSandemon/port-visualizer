@@ -14,12 +14,21 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import iconPath from '../../resources/icon.png?asset';
 import { IPC } from '../shared/ipc';
-import type { AppSettings, ExportRequest, PortEntry, PortsUpdate } from '../shared/types';
+import type {
+  AppSettings,
+  EnrichmentUpdate,
+  ExportRequest,
+  FirewallStatus,
+  PortEntry,
+  PortsUpdate,
+} from '../shared/types';
 import { portsToCsv, portsToJson } from '../shared/export';
 import { diffScans } from './diff';
+import { firewallKey, readFirewallRules, setPortBlocked } from './firewall';
 import { killProcess, killProcessElevated } from './kill';
 import { scanPorts } from './scanner';
 import { getSettings, loadSettings, updateSettings } from './settings';
+import { resolveSignatures } from './signature';
 import { EventStore } from './event-store';
 import { KnowledgePackRegistry } from './knowledge-packs';
 import { TelemetryEngine } from './telemetry';
@@ -43,6 +52,79 @@ const knowledgePacks = new KnowledgePackRegistry();
 /** Paths seen in the last scan — the only paths open-location will accept. */
 const knownPaths = new Set<string>();
 
+// Slow lookups are cached here and attached to each scan synchronously; the
+// background pass below refreshes them and pushes a delta to the renderer.
+let firewallStatuses = new Map<string, FirewallStatus>();
+let firewallReadAt = 0;
+let firewallAvailable = false;
+let enrichmentInFlight: Promise<void> | null = null;
+
+const FIREWALL_TTL_MS = 120000;
+
+/**
+ * Resolve one port against the last rule read. A port with no matching rule is
+ * only reported rule-free when the read actually succeeded — otherwise the UI
+ * would claim a blocked port was open.
+ */
+function firewallFor(port: PortEntry): FirewallStatus | null {
+  const known = firewallStatuses.get(firewallKey(port.protocol, port.localPort));
+  if (known) return known;
+  if (firewallReadAt === 0) return null;
+  return {
+    disposition: firewallAvailable ? 'no-rule' : 'unavailable',
+    ruleNames: [],
+    checkedAt: firewallReadAt,
+  };
+}
+
+function applyFirewall(ports: PortEntry[]): void {
+  for (const port of ports) port.firewall = firewallFor(port);
+}
+
+/**
+ * Resolve Authenticode publishers and firewall rules off the scan path. Only
+ * newly learned values are pushed, and the next scan picks them up from cache.
+ */
+function scheduleEnrichment(ports: PortEntry[]): void {
+  if (enrichmentInFlight) return;
+  const paths = [...new Set(ports.map((p) => p.processPath).filter((p): p is string => !!p))];
+  const firewallStale = Date.now() - firewallReadAt > FIREWALL_TTL_MS;
+
+  enrichmentInFlight = (async () => {
+    const delta: EnrichmentUpdate = { signatures: {}, firewall: {} };
+
+    const resolved = await resolveSignatures(paths);
+    for (const [path, signature] of resolved) delta.signatures[path] = signature;
+
+    if (firewallStale) {
+      const read = await readFirewallRules();
+      firewallStatuses = read.statuses;
+      firewallAvailable = read.available;
+      firewallReadAt = Date.now();
+      for (const port of lastPorts) {
+        const status = firewallFor(port);
+        if (status) delta.firewall[firewallKey(port.protocol, port.localPort)] = status;
+      }
+    }
+
+    applyFirewall(lastPorts);
+    for (const port of lastPorts) {
+      if (port.processPath) {
+        const signature = delta.signatures[port.processPath];
+        if (signature) port.signature = signature;
+      }
+    }
+
+    if (Object.keys(delta.signatures).length > 0 || Object.keys(delta.firewall).length > 0) {
+      mainWindow?.webContents.send(IPC.enrichmentUpdated, delta);
+    }
+  })()
+    .catch((error) => console.error('[Main] Enrichment pass failed:', error))
+    .finally(() => {
+      enrichmentInFlight = null;
+    });
+}
+
 async function runScan(): Promise<PortsUpdate> {
   // Coalesce concurrent requests (button spam, timer overlap) into one scan.
   if (scanInFlight) return scanInFlight;
@@ -57,6 +139,7 @@ async function runScan(): Promise<PortsUpdate> {
       const diff = diffScans(lastPorts, result.ports);
       const events = telemetry.apply(result.ports, diff, result.timestamp);
       lastPorts = result.ports;
+      applyFirewall(result.ports);
 
       if (eventStore) await eventStore.append(events);
 
@@ -73,9 +156,11 @@ async function runScan(): Promise<PortsUpdate> {
       };
       mainWindow?.webContents.send(IPC.portsUpdated, update);
       updateTrayTooltip();
+      scheduleEnrichment(result.ports);
       if (hasScannedOnce) {
         notifyNewListeners(update);
         notifyWatchedPorts(update);
+        notifyOffBaseline(update);
       }
       hasScannedOnce = true;
       return update;
@@ -154,6 +239,53 @@ function notifyWatchedPorts(update: PortsUpdate): void {
 
 function watchedPortKey(port: PortEntry): string {
   return `${port.protocol}:${port.localPort}`;
+}
+
+/** Ports that were already alerted on, so a standing listener notifies once. */
+const alertedBaselineKeys = new Set<string>();
+
+/**
+ * Alert on listeners absent from the captured baseline. Unlike the new-listener
+ * notification this survives restarts of the offending process, which is what
+ * makes it useful for spotting something that should not be there at all.
+ */
+function notifyOffBaseline(update: PortsUpdate): void {
+  const settings = getSettings();
+  if (
+    !settings.notifyOffBaseline ||
+    settings.baselineCapturedAt === 0 ||
+    !Notification.isSupported()
+  ) {
+    return;
+  }
+
+  const baseline = new Set(settings.baselinePortKeys);
+  const byId = new Map(update.ports.map((p) => [p.id, p]));
+  const offBaseline = update.diff.addedIds
+    .map((id) => byId.get(id))
+    .filter(
+      (p): p is PortEntry =>
+        !!p &&
+        p.state === 'LISTENING' &&
+        !baseline.has(watchedPortKey(p)) &&
+        !alertedBaselineKeys.has(watchedPortKey(p)),
+    );
+  if (offBaseline.length === 0) return;
+
+  for (const port of offBaseline) alertedBaselineKeys.add(watchedPortKey(port));
+  const first = offBaseline[0];
+  try {
+    new Notification({
+      title:
+        offBaseline.length === 1
+          ? `Off-baseline listener on port ${first.localPort}`
+          : `${offBaseline.length} off-baseline listeners`,
+      body: `${first.processName} (PID ${first.pid}) is not in your captured baseline.`,
+      icon: iconPath,
+    }).show();
+  } catch (error) {
+    console.error('[Main] Off-baseline notification failed:', error);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +480,33 @@ function registerIpc(): void {
   ipcMain.handle(IPC.getRecentEvents, (_event, limit: unknown) => {
     const safeLimit = typeof limit === 'number' && Number.isFinite(limit) ? limit : 500;
     return eventStore?.getRecent(safeLimit) ?? [];
+  });
+
+  ipcMain.handle(IPC.setPortBlocked, async (_event, protocol: unknown, port: unknown, blocked: unknown) => {
+    // Only a port observed in the current scan can be targeted, so the renderer
+    // cannot use this channel to author arbitrary firewall rules.
+    const known = lastPorts.some((entry) => entry.protocol === protocol && entry.localPort === port);
+    if (!known) return { success: false, error: 'Unknown port' };
+
+    const result = await setPortBlocked(protocol, port, blocked);
+    if (result.success) {
+      // Force the next enrichment pass to re-read rules so the badge updates.
+      firewallReadAt = 0;
+      void runScan().catch((error) =>
+        console.error('[Main] Scan after firewall change failed:', error),
+      );
+    }
+    return result;
+  });
+
+  ipcMain.handle(IPC.captureBaseline, () => {
+    const keys = [
+      ...new Set(
+        lastPorts.filter((p) => p.state === 'LISTENING').map((p) => `${p.protocol}:${p.localPort}`),
+      ),
+    ];
+    alertedBaselineKeys.clear();
+    return updateSettings({ baselinePortKeys: keys, baselineCapturedAt: Date.now() });
   });
 
   ipcMain.handle(IPC.setSettings, (_event, patch: unknown) => {

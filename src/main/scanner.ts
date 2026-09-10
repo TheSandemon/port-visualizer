@@ -6,6 +6,8 @@ import { portEntryId } from '../shared/port-id';
 import { lookupServiceLabel } from '../shared/known-ports';
 import { withObservationFields } from '../shared/observation';
 import { redactCommandLine } from '../shared/redaction';
+import { buildAncestors, type AncestorSource } from './process-tree';
+import { getCachedSignature } from './signature';
 
 const execFileAsync = promisify(execFile);
 
@@ -391,16 +393,25 @@ function mergeCachedProcesses(processes: Map<number, ProcessInfo>): Map<number, 
   return merged;
 }
 
+function lookupAncestor(pid: number): AncestorSource | null {
+  const cached = processCache.get(pid);
+  if (!cached || cached.expiresAt <= Date.now()) return null;
+  return { name: cached.info.name, parentPid: cached.info.parentPid };
+}
+
 function hydrateFromProcessCache(ports: PortEntry[]): void {
   const now = Date.now();
   for (const port of ports) {
     const cached = processCache.get(port.pid);
-    if (!cached || cached.expiresAt <= now) continue;
-    if (port.processName.startsWith('Process ')) port.processName = cached.info.name;
-    if (!port.processPath) port.processPath = cached.info.path;
-    if (!port.memory) port.memory = cached.info.memory;
-    if (port.parentPid === null) port.parentPid = cached.info.parentPid;
-    if (!port.commandLine) port.commandLine = cached.info.commandLine;
+    if (cached && cached.expiresAt > now) {
+      if (port.processName.startsWith('Process ')) port.processName = cached.info.name;
+      if (!port.processPath) port.processPath = cached.info.path;
+      if (!port.memory) port.memory = cached.info.memory;
+      if (port.parentPid === null) port.parentPid = cached.info.parentPid;
+      if (!port.commandLine) port.commandLine = cached.info.commandLine;
+    }
+    port.ancestors = buildAncestors(port.pid, port.parentPid, lookupAncestor);
+    port.signature = port.processPath ? getCachedSignature(port.processPath) : null;
   }
 }
 
